@@ -1,0 +1,10 @@
+{
+  "domain": "image_compositor",
+  "name": "Image Compositor",
+  "version": "0.1.0",
+  "documentation": "https://github.com/lweberru/image_compositor",
+  "requirements": ["Pillow==10.4.0"],
+  "config_flow": false,
+  "codeowners": [],
+  "iot_class": "local_push"
+}

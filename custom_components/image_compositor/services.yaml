@@ -1,0 +1,82 @@
+compose:
+  name: Compose image
+  description: Compose a base image with overlay layers and return a /local/ URL.
+  fields:
+    base_image:
+      name: Base image
+      description: Base image URL or /local/ path.
+      required: true
+      example: /local/cars/base.png
+      selector:
+        text:
+    layers:
+      name: Layers
+      description: List of overlay layers (image, x, y, opacity, scale).
+      required: false
+      example:
+        - image: /local/cars/door_open.png
+          x: 0
+          y: 0
+          opacity: 1.0
+          scale: 1.0
+      selector:
+        object:
+    output_name:
+      name: Output filename
+      description: Optional filename for the output image.
+      required: false
+      example: car_state.png
+      selector:
+        text:
+    cache_key:
+      name: Cache key
+      description: If provided and file exists, return cached file.
+      required: false
+      example: car_state_hash
+      selector:
+        text:
+    format:
+      name: Format
+      description: Output format (png or jpg).
+      required: false
+      example: png
+      selector:
+        text:
+
+file_exists:
+  name: File exists
+  description: Checks whether a local file exists in /config/www.
+  fields:
+    local_url:
+      name: Local URL
+      description: /local/ URL to check.
+      required: false
+      example: /local/image_compositor/example.png
+      selector:
+        text:
+    path:
+      name: Path
+      description: Target path relative to /config (default www/image_compositor).
+      required: false
+      example: www/image_compositor
+      selector:
+        text:
+    filename:
+      name: Filename
+      description: Filename to check in the given path.
+      required: false
+      example: example.png
+      selector:
+        text:
+
+clear_cache:
+  name: Clear cache
+  description: Deletes cached files in /config/www/image_compositor.
+  fields:
+    prefix:
+      name: Prefix
+      description: Optional filename prefix to delete.
+      required: false
+      example: car_state_
+      selector:
+        text:
