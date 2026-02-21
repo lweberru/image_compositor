@@ -42,6 +42,13 @@ compose:
       example: png
       selector:
         text:
+    output_path:
+      name: Output path
+      description: Target path relative to /config (default www/image_compositor).
+      required: false
+      example: www/image_compositor
+      selector:
+        text:
 
 file_exists:
   name: File exists

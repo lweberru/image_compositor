@@ -29,6 +29,7 @@ COMPOSE_SCHEMA = vol.Schema(
         vol.Optional("output_name"): str,
         vol.Optional("cache_key"): str,
         vol.Optional("format", default="png"): vol.In(["png", "jpg", "jpeg"]),
+        vol.Optional("output_path"): str,
     }
 )
 
@@ -207,7 +208,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         output_format = str(call.data.get("format") or "png").lower()
         output_name = call.data.get("output_name")
 
-        output_path = _normalize_output_path(None)
+        output_path = _normalize_output_path(call.data.get("output_path") or OUTPUT_DIR_DEFAULT)
         output_dir = Path(hass.config.path(output_path))
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -215,10 +216,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             cached_name = _safe_filename(cache_key, output_format)
             cached_path = output_dir / cached_name
             if cached_path.exists():
-                local_path = output_path[4:] if output_path.startswith("www/") else output_path
-                local_path = local_path.strip("/")
-                local_url = f"/local/{local_path}/{cached_name}" if local_path else f"/local/{cached_name}"
-                return {"local_url": local_url, "filename": str(cached_path)}
+                return {"local_url": _local_url_from_path(output_path, cached_name), "filename": str(cached_path)}
 
         base_bytes = await _fetch_image_bytes(hass, base_image)
 
@@ -242,11 +240,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         full_path = output_dir / filename
         full_path.write_bytes(composed_bytes)
 
-        local_path = output_path[4:] if output_path.startswith("www/") else output_path
-        local_path = local_path.strip("/")
-        local_url = f"/local/{local_path}/{filename}" if local_path else f"/local/{filename}"
-
-        return {"local_url": local_url, "filename": str(full_path)}
+        return {"local_url": _local_url_from_path(output_path, filename), "filename": str(full_path)}
 
     async def _handle_exists(call: ServiceCall) -> dict[str, Any]:
         local_url = _normalize_local_url(call.data.get("local_url"))

@@ -24,6 +24,7 @@ Composes a base image with overlay layers and writes the result under `/config/w
 - `output_name` (optional): File name for the output.
 - `cache_key` (optional): If provided and cached file exists, the service returns that file.
 - `format` (optional): `png` or `jpg` (default: `png`).
+- `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor`).
 
 **Response**
 - `local_url`: Path under `/local/…`
