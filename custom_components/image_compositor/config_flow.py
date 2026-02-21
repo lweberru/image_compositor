@@ -1,6 +1,8 @@
 """Config flow for Image Compositor."""
 from __future__ import annotations
 
+import voluptuous as vol
+
 from homeassistant import config_entries
 from homeassistant.core import callback
 
@@ -20,7 +22,7 @@ class ImageCompositorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="Image Compositor", data={})
 
-        return self.async_show_form(step_id="user")
+        return self.async_show_form(step_id="user", data_schema=vol.Schema({}))
 
     @callback
     def async_get_options_flow(self, config_entry):
@@ -35,4 +37,4 @@ class ImageCompositorOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         """Manage the options flow."""
-        return self.async_show_form(step_id="init")
+        return self.async_show_form(step_id="init", data_schema=vol.Schema({}))
