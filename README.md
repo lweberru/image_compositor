@@ -101,7 +101,7 @@ data:
 
 ### `image_compositor.ensure_assets`
 
-Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenAI inpainting. Optionally applies a mask or derives an overlay from a base image.
+Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenAI (generations/edits). Optionally applies a mask or derives an overlay from a base image.
 
 **Fields**
  - `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor/assets`).
@@ -115,11 +115,11 @@ Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenA
    - `size` (openai, optional): Output size (e.g. `1024x1024`).
  - `assets` (required): List of asset specs.
    - `name`, `prompt`, `filename` (required)
-   - `mask_url` (optional): Mask for transparency or inpainting.
+  - `mask_url` (optional): Mask for transparency or inpainting (recommended for best alignment).
    - `format` (optional): `png` or `jpg`.
    - `attempts` (optional): Retry count.
-   - `base_ref` (openai, optional): Name of another asset to use as base.
-   - `base_image` (openai, optional): Base image URL or `/local/...`.
+  - `base_ref` (openai, optional): Name of another asset to use as base.
+  - `base_image` (openai, optional): Base image URL or `/local/...`.
    - `derive_overlay` (openai, optional): Derive overlay by diffing base and edited image.
 
 **Response**

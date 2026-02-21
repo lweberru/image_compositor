@@ -161,7 +161,7 @@ async def _openai_edit_image(
     hass: HomeAssistant,
     api_key: str,
     base_bytes: bytes,
-    mask_bytes: bytes,
+    mask_bytes: bytes | None,
     prompt: str,
     model: str,
     size: str,
@@ -175,7 +175,8 @@ async def _openai_edit_image(
     data.add_field("size", size)
     data.add_field("response_format", "b64_json")
     data.add_field("image", base_bytes, filename="base.png", content_type="image/png")
-    data.add_field("mask", mask_bytes, filename="mask.png", content_type="image/png")
+    if mask_bytes:
+        data.add_field("mask", mask_bytes, filename="mask.png", content_type="image/png")
 
     async with session.post(
         url,
@@ -185,6 +186,42 @@ async def _openai_edit_image(
         resp.raise_for_status()
         payload = await resp.json()
         data_items = payload.get("data") or []
+        if not data_items:
+            raise ValueError("OpenAI response missing data")
+        b64 = data_items[0].get("b64_json")
+        if not b64:
+            raise ValueError("OpenAI response missing b64_json")
+        return base64.b64decode(b64)
+
+
+async def _openai_generate_image(
+    hass: HomeAssistant,
+    api_key: str,
+    prompt: str,
+    model: str,
+    size: str,
+) -> bytes:
+    session = aiohttp_client.async_get_clientsession(hass)
+    url = "https://api.openai.com/v1/images/generations"
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "response_format": "b64_json",
+    }
+
+    async with session.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    ) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+        data_items = data.get("data") or []
         if not data_items:
             raise ValueError("OpenAI response missing data")
         b64 = data_items[0].get("b64_json")
@@ -396,17 +433,20 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
                 if not api_key:
                     last_error = "openai api_key missing"
-                elif not base_bytes:
-                    last_error = "openai requires base image (base_ref/base_image)"
-                elif not mask_url:
-                    last_error = "openai requires mask_url for inpainting"
                 else:
                     for _ in range(max(1, attempts)):
                         try:
-                            mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
-                            image_bytes = await _openai_edit_image(
-                                hass, api_key, base_bytes, mask_bytes, prompt, model, size
-                            )
+                            if base_bytes:
+                                mask_bytes = None
+                                if mask_url:
+                                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                                image_bytes = await _openai_edit_image(
+                                    hass, api_key, base_bytes, mask_bytes, prompt, model, size
+                                )
+                            else:
+                                image_bytes = await _openai_generate_image(
+                                    hass, api_key, prompt, model, size
+                                )
                             if image_bytes:
                                 break
                         except Exception as err:  # noqa: BLE001

@@ -90,7 +90,7 @@ clear_cache:
 
 ensure_assets:
   name: Ensure assets
-  description: Generate and cache assets via ai_task and optional masks.
+  description: Generate and cache assets via ai_task or OpenAI (edits or generations). Masks are optional.
   fields:
     output_path:
       name: Output path
