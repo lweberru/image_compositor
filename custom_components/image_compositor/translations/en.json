@@ -1,0 +1,14 @@
+{
+  "config": {
+    "flow_title": "Image Compositor",
+    "step": {
+      "user": {
+        "title": "Image Compositor",
+        "description": "Set up the Image Compositor integration."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one instance is allowed."
+    }
+  }
+}

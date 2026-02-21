@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers import aiohttp_client
 
-DOMAIN = "image_compositor"
+from .const import DOMAIN
 SERVICE_COMPOSE = "compose"
 SERVICE_EXISTS = "file_exists"
 SERVICE_CLEAR_CACHE = "clear_cache"
