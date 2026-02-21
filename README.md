@@ -70,7 +70,6 @@ data:
 ### `image_compositor.file_exists`
 
 Checks if a local file exists in `/config/www`.
-
 **Fields**
  - `local_url` (optional): `/local/...` URL to check.
  - `path` (optional): Target path relative to `/config` (default: `www/image_compositor`).
@@ -102,16 +101,50 @@ data:
 
 ### `image_compositor.ensure_assets`
 
-Generates and caches assets via Home Assistant `ai_task.generate_image`. Optionally applies a mask to enforce transparency.
+Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenAI inpainting. Optionally applies a mask or derives an overlay from a base image.
 
 **Fields**
  - `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor/assets`).
  - `task_name_prefix` (optional): Prefix for `ai_task` task names.
- - `provider` (optional): Provider config (`type=ai_task`, `entity_id`, `service_data`).
- - `assets` (required): List of asset specs (`name`, `prompt`, `filename`, `mask_url`, `format`, `attempts`).
+ - `provider` (optional): Provider config.
+   - `type`: `ai_task` or `openai`.
+   - `entity_id` (ai_task): Target ai_task entity.
+   - `service_data` (ai_task, optional): Extra ai_task service data.
+   - `api_key` (openai): OpenAI API key.
+   - `model` (openai): Image model (e.g. `gpt-image-1`).
+   - `size` (openai, optional): Output size (e.g. `1024x1024`).
+ - `assets` (required): List of asset specs.
+   - `name`, `prompt`, `filename` (required)
+   - `mask_url` (optional): Mask for transparency or inpainting.
+   - `format` (optional): `png` or `jpg`.
+   - `attempts` (optional): Retry count.
+   - `base_ref` (openai, optional): Name of another asset to use as base.
+   - `base_image` (openai, optional): Base image URL or `/local/...`.
+   - `derive_overlay` (openai, optional): Derive overlay by diffing base and edited image.
 
 **Response**
  - `assets`: List of generated asset records (`name`, `local_url`, `filename`, `cached`, `error`).
+
+### Example: ensure_assets (OpenAI inpainting)
+```yaml
+service: image_compositor.ensure_assets
+data:
+  provider:
+    type: openai
+    api_key: !secret openai_api_key
+    model: gpt-image-1
+    size: 1024x1024
+  assets:
+    - name: base_front
+      prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
+      filename: base_front.png
+    - name: door_fl_open
+      prompt: "Same car and view, front left door open"
+      filename: door_fl_open.png
+      mask_url: /local/masks/door_fl_mask.png
+      base_ref: base_front
+      derive_overlay: true
+```
 
 ### Example: ensure_assets
 ```yaml

@@ -5,6 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 from typing import Any
+import base64
 from urllib.parse import urlparse
 
 import voluptuous as vol
@@ -135,6 +136,61 @@ def _apply_alpha_mask(image_bytes: bytes, mask_bytes: bytes) -> bytes:
     out = BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
+
+
+def _derive_overlay_from_base(base_bytes: bytes, edited_bytes: bytes, threshold: int = 12) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageChops
+
+    base_img = Image.open(BytesIO(base_bytes)).convert("RGBA")
+    edited_img = Image.open(BytesIO(edited_bytes)).convert("RGBA")
+
+    diff = ImageChops.difference(base_img, edited_img).convert("L")
+    alpha = diff.point(lambda p: 255 if p > threshold else 0)
+
+    overlay = edited_img.copy()
+    overlay.putalpha(alpha)
+
+    out = BytesIO()
+    overlay.save(out, format="PNG")
+    return out.getvalue()
+
+
+async def _openai_edit_image(
+    hass: HomeAssistant,
+    api_key: str,
+    base_bytes: bytes,
+    mask_bytes: bytes,
+    prompt: str,
+    model: str,
+    size: str,
+) -> bytes:
+    session = aiohttp_client.async_get_clientsession(hass)
+    url = "https://api.openai.com/v1/images/edits"
+
+    data = aiohttp_client.FormData()
+    data.add_field("model", model)
+    data.add_field("prompt", prompt)
+    data.add_field("size", size)
+    data.add_field("response_format", "b64_json")
+    data.add_field("image", base_bytes, filename="base.png", content_type="image/png")
+    data.add_field("mask", mask_bytes, filename="mask.png", content_type="image/png")
+
+    async with session.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        data=data,
+    ) as resp:
+        resp.raise_for_status()
+        payload = await resp.json()
+        data_items = payload.get("data") or []
+        if not data_items:
+            raise ValueError("OpenAI response missing data")
+        b64 = data_items[0].get("b64_json")
+        if not b64:
+            raise ValueError("OpenAI response missing b64_json")
+        return base64.b64decode(b64)
 
 
 def _extract_ai_task_urls(payload: Any) -> list[str]:
@@ -313,40 +369,86 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                 continue
 
             provider_type = str(provider.get("type") or "ai_task").lower()
-            if provider_type != "ai_task":
-                raise vol.Invalid("Only provider.type=ai_task is supported in this version.")
 
-            service_data: dict[str, Any] = {
-                "task_name": f"{task_name_prefix}: {name}",
-                "instructions": prompt,
-            }
-            entity_id = provider.get("entity_id") or provider.get("ha_entity_id")
-            if entity_id:
-                service_data["entity_id"] = entity_id
-            service_data.update(provider.get("service_data") or {})
+            base_ref = asset.get("base_ref")
+            base_image = asset.get("base_image")
+            base_bytes: bytes | None = None
+            if base_ref:
+                base_filename = _safe_filename(str(base_ref), "png")
+                base_path = output_dir / base_filename
+                if base_path.exists():
+                    base_bytes = base_path.read_bytes()
+            if not base_bytes and base_image:
+                try:
+                    base_bytes = await _fetch_image_bytes(hass, str(base_image))
+                except Exception:
+                    base_bytes = None
 
             attempts = int(asset.get("attempts") or 2)
             last_error: str | None = None
-            urls: list[str] = []
+            image_bytes: bytes | None = None
 
-            for _ in range(max(1, attempts)):
-                try:
-                    response = await hass.services.async_call(
-                        "ai_task",
-                        "generate_image",
-                        service_data,
-                        blocking=True,
-                        return_response=True,
-                    )
-                    payload = response.get("response") if isinstance(response, dict) else response
-                    urls = _extract_ai_task_urls(payload or {})
-                    if urls:
-                        break
-                    last_error = "no image url in response"
-                except Exception as err:  # noqa: BLE001
-                    last_error = str(err)
+            if provider_type == "openai":
+                api_key = provider.get("api_key") or provider.get("token")
+                model = str(provider.get("model") or "gpt-image-1")
+                size = str(provider.get("size") or "1024x1024")
+                mask_url = asset.get("mask_url") or asset.get("mask")
 
-            if not urls:
+                if not api_key:
+                    last_error = "openai api_key missing"
+                elif not base_bytes:
+                    last_error = "openai requires base image (base_ref/base_image)"
+                elif not mask_url:
+                    last_error = "openai requires mask_url for inpainting"
+                else:
+                    for _ in range(max(1, attempts)):
+                        try:
+                            mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                            image_bytes = await _openai_edit_image(
+                                hass, api_key, base_bytes, mask_bytes, prompt, model, size
+                            )
+                            if image_bytes:
+                                break
+                        except Exception as err:  # noqa: BLE001
+                            last_error = str(err)
+
+            elif provider_type == "ai_task":
+                service_data: dict[str, Any] = {
+                    "task_name": f"{task_name_prefix}: {name}",
+                    "instructions": prompt,
+                }
+                entity_id = provider.get("entity_id") or provider.get("ha_entity_id")
+                if entity_id:
+                    service_data["entity_id"] = entity_id
+                service_data.update(provider.get("service_data") or {})
+
+                urls: list[str] = []
+                for _ in range(max(1, attempts)):
+                    try:
+                        response = await hass.services.async_call(
+                            "ai_task",
+                            "generate_image",
+                            service_data,
+                            blocking=True,
+                            return_response=True,
+                        )
+                        payload = response.get("response") if isinstance(response, dict) else response
+                        urls = _extract_ai_task_urls(payload or {})
+                        if urls:
+                            break
+                        last_error = "no image url in response"
+                    except Exception as err:  # noqa: BLE001
+                        last_error = str(err)
+
+                if urls:
+                    try:
+                        image_bytes = await _fetch_image_bytes(hass, urls[0])
+                    except Exception as err:  # noqa: BLE001
+                        last_error = str(err)
+            else:
+                last_error = f"unsupported provider type: {provider_type}"
+
+            if not image_bytes:
                 results.append(
                     {
                         "name": name,
@@ -357,9 +459,14 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                 continue
 
             try:
-                image_bytes = await _fetch_image_bytes(hass, urls[0])
                 mask_url = asset.get("mask_url") or asset.get("mask")
-                if mask_url:
+                derive_overlay = bool(asset.get("derive_overlay"))
+
+                if derive_overlay and base_bytes:
+                    image_bytes = await hass.async_add_executor_job(
+                        _derive_overlay_from_base, base_bytes, image_bytes
+                    )
+                elif mask_url:
                     mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
                     image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
 

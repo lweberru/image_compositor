@@ -108,13 +108,13 @@ ensure_assets:
         text:
     provider:
       name: Provider
-      description: Provider config (type=ai_task, entity_id, service_data).
+      description: Provider config (type=ai_task|openai, entity_id, api_key, model, size, service_data).
       required: false
       selector:
         object:
     assets:
       name: Assets
-      description: List of assets to generate (name, prompt, filename, mask_url).
+      description: List of assets to generate (name, prompt, filename, mask_url, base_ref, base_image, derive_overlay, attempts).
       required: true
       selector:
         object:
