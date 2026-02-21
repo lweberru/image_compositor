@@ -325,34 +325,62 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                 service_data["entity_id"] = entity_id
             service_data.update(provider.get("service_data") or {})
 
-            response = await hass.services.async_call(
-                "ai_task",
-                "generate_image",
-                service_data,
-                blocking=True,
-                return_response=True,
-            )
-            payload = response.get("response") if isinstance(response, dict) else response
-            urls = _extract_ai_task_urls(payload or {})
+            attempts = int(asset.get("attempts") or 2)
+            last_error: str | None = None
+            urls: list[str] = []
+
+            for _ in range(max(1, attempts)):
+                try:
+                    response = await hass.services.async_call(
+                        "ai_task",
+                        "generate_image",
+                        service_data,
+                        blocking=True,
+                        return_response=True,
+                    )
+                    payload = response.get("response") if isinstance(response, dict) else response
+                    urls = _extract_ai_task_urls(payload or {})
+                    if urls:
+                        break
+                    last_error = "no image url in response"
+                except Exception as err:  # noqa: BLE001
+                    last_error = str(err)
+
             if not urls:
+                results.append(
+                    {
+                        "name": name,
+                        "error": last_error or "no image returned",
+                        "cached": False,
+                    }
+                )
                 continue
 
-            image_bytes = await _fetch_image_bytes(hass, urls[0])
-            mask_url = asset.get("mask_url") or asset.get("mask")
-            if mask_url:
-                mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
-                image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
+            try:
+                image_bytes = await _fetch_image_bytes(hass, urls[0])
+                mask_url = asset.get("mask_url") or asset.get("mask")
+                if mask_url:
+                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                    image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
 
-            full_path.write_bytes(image_bytes)
+                full_path.write_bytes(image_bytes)
 
-            results.append(
-                {
-                    "name": name,
-                    "local_url": _local_url_from_path(output_path, filename),
-                    "filename": str(full_path),
-                    "cached": False,
-                }
-            )
+                results.append(
+                    {
+                        "name": name,
+                        "local_url": _local_url_from_path(output_path, filename),
+                        "filename": str(full_path),
+                        "cached": False,
+                    }
+                )
+            except Exception as err:  # noqa: BLE001
+                results.append(
+                    {
+                        "name": name,
+                        "error": str(err),
+                        "cached": False,
+                    }
+                )
 
         return {"assets": results}
 
