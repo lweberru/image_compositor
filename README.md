@@ -48,6 +48,37 @@ Deletes cached images by prefix.
 **Fields**
 - `prefix` (optional): File prefix to delete.
 
+### `image_compositor.ensure_assets`
+
+Generates and caches assets via Home Assistant `ai_task.generate_image`. Optionally applies a mask to enforce transparency.
+
+**Fields**
+- `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor/assets`).
+- `task_name_prefix` (optional): Prefix for `ai_task` task names.
+- `provider` (optional): Provider config (`type=ai_task`, `entity_id`, `service_data`).
+- `assets` (required): List of asset specs (`name`, `prompt`, `filename`, `mask_url`, `format`).
+
+**Response**
+- `assets`: List of generated asset records (`name`, `local_url`, `filename`, `cached`).
+
+### Example: ensure_assets
+```yaml
+service: image_compositor.ensure_assets
+data:
+	task_name_prefix: BMW Assets
+	provider:
+		type: ai_task
+		entity_id: ai_task.google_ai_task
+	assets:
+		- name: base_front
+			prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
+			filename: base_front.png
+		- name: door_fl_open
+			prompt: "Same car and view, front left door open, transparent background"
+			filename: door_fl_open.png
+			mask_url: /local/masks/door_fl_mask.png
+```
+
 ## Notes
 
 - This integration is intended to be generic and reusable across cards and dashboards.

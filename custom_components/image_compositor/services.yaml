@@ -80,3 +80,34 @@ clear_cache:
       example: car_state_
       selector:
         text:
+
+ensure_assets:
+  name: Ensure assets
+  description: Generate and cache assets via ai_task and optional masks.
+  fields:
+    output_path:
+      name: Output path
+      description: Target path relative to /config (default www/image_compositor/assets).
+      required: false
+      example: www/image_compositor/assets
+      selector:
+        text:
+    task_name_prefix:
+      name: Task name prefix
+      description: Prefix for ai_task task names.
+      required: false
+      example: BMW Assets
+      selector:
+        text:
+    provider:
+      name: Provider
+      description: Provider config (type=ai_task, entity_id, service_data).
+      required: false
+      selector:
+        object:
+    assets:
+      name: Assets
+      description: List of assets to generate (name, prompt, filename, mask_url).
+      required: true
+      selector:
+        object:

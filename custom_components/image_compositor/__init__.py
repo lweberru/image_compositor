@@ -17,8 +17,10 @@ DOMAIN = "image_compositor"
 SERVICE_COMPOSE = "compose"
 SERVICE_EXISTS = "file_exists"
 SERVICE_CLEAR_CACHE = "clear_cache"
+SERVICE_ENSURE_ASSETS = "ensure_assets"
 
 OUTPUT_DIR_DEFAULT = "www/image_compositor"
+ASSET_DIR_DEFAULT = "www/image_compositor/assets"
 
 COMPOSE_SCHEMA = vol.Schema(
     {
@@ -41,6 +43,15 @@ EXISTS_SCHEMA = vol.Schema(
 CLEAR_CACHE_SCHEMA = vol.Schema(
     {
         vol.Optional("prefix"): str,
+    }
+)
+
+ENSURE_ASSETS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("output_path"): str,
+        vol.Optional("task_name_prefix"): str,
+        vol.Optional("provider", default={}): dict,
+        vol.Required("assets"): list,
     }
 )
 
@@ -93,6 +104,12 @@ def _safe_filename(name: str | None, default_ext: str) -> str:
     return base
 
 
+def _local_url_from_path(output_path: str, filename: str) -> str:
+    local_path = output_path[4:] if output_path.startswith("www/") else output_path
+    local_path = local_path.strip("/")
+    return f"/local/{local_path}/{filename}" if local_path else f"/local/{filename}"
+
+
 async def _fetch_image_bytes(hass: HomeAssistant, source: str) -> bytes:
     if source.startswith("/local/") or source.startswith("local/"):
         local_path = _resolve_local_path(source)
@@ -103,6 +120,46 @@ async def _fetch_image_bytes(hass: HomeAssistant, source: str) -> bytes:
     async with session.get(source) as resp:
         resp.raise_for_status()
         return await resp.read()
+
+
+def _apply_alpha_mask(image_bytes: bytes, mask_bytes: bytes) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    mask = Image.open(BytesIO(mask_bytes)).convert("L")
+    img.putalpha(mask)
+
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _extract_ai_task_urls(payload: Any) -> list[str]:
+    if not payload:
+        return []
+    candidates = payload.get("images") or payload.get("data") or payload.get("results") or payload.get("result") or payload
+    items = candidates if isinstance(candidates, list) else [candidates]
+    urls: list[str] = []
+    for item in items:
+        if not item:
+            continue
+        if isinstance(item, str):
+            urls.append(item)
+            continue
+        url = (
+            item.get("url")
+            or item.get("image_url")
+            or item.get("media_url")
+            or item.get("content_url")
+            or (item.get("image") or {}).get("url")
+            or item.get("local_url")
+            or item.get("local_path")
+        )
+        if url:
+            urls.append(str(url))
+    return urls
 
 
 def _apply_layers(base_bytes: bytes, layers: list[dict[str, Any]], output_format: str) -> bytes:
@@ -228,6 +285,83 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
         return {"deleted": deleted}
 
+    async def _handle_ensure_assets(call: ServiceCall) -> dict[str, Any]:
+        output_path = _normalize_output_path(call.data.get("output_path") or ASSET_DIR_DEFAULT)
+        output_dir = Path(hass.config.path(output_path))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        provider = call.data.get("provider") or {}
+        task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor")
+        assets = call.data.get("assets") or []
+
+        results: list[dict[str, Any]] = []
+
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or asset.get("id") or "asset").strip()
+            prompt = str(asset.get("prompt") or "").strip()
+            if not prompt:
+                continue
+            output_format = str(asset.get("format") or "png").lower()
+            filename = _safe_filename(asset.get("filename") or name, output_format)
+            full_path = output_dir / filename
+
+            if full_path.exists():
+                results.append(
+                    {
+                        "name": name,
+                        "local_url": _local_url_from_path(output_path, filename),
+                        "filename": str(full_path),
+                        "cached": True,
+                    }
+                )
+                continue
+
+            provider_type = str(provider.get("type") or "ai_task").lower()
+            if provider_type != "ai_task":
+                raise vol.Invalid("Only provider.type=ai_task is supported in this version.")
+
+            service_data: dict[str, Any] = {
+                "task_name": f"{task_name_prefix}: {name}",
+                "instructions": prompt,
+            }
+            entity_id = provider.get("entity_id") or provider.get("ha_entity_id")
+            if entity_id:
+                service_data["entity_id"] = entity_id
+            service_data.update(provider.get("service_data") or {})
+
+            response = await hass.services.async_call(
+                "ai_task",
+                "generate_image",
+                service_data,
+                blocking=True,
+                return_response=True,
+            )
+            payload = response.get("response") if isinstance(response, dict) else response
+            urls = _extract_ai_task_urls(payload or {})
+            if not urls:
+                continue
+
+            image_bytes = await _fetch_image_bytes(hass, urls[0])
+            mask_url = asset.get("mask_url") or asset.get("mask")
+            if mask_url:
+                mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
+
+            full_path.write_bytes(image_bytes)
+
+            results.append(
+                {
+                    "name": name,
+                    "local_url": _local_url_from_path(output_path, filename),
+                    "filename": str(full_path),
+                    "cached": False,
+                }
+            )
+
+        return {"assets": results}
+
     if not hass.services.has_service(DOMAIN, SERVICE_COMPOSE):
         hass.services.async_register(
             DOMAIN,
@@ -252,6 +386,15 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             SERVICE_CLEAR_CACHE,
             _handle_clear_cache,
             schema=CLEAR_CACHE_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_ENSURE_ASSETS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_ENSURE_ASSETS,
+            _handle_ensure_assets,
+            schema=ENSURE_ASSETS_SCHEMA,
             supports_response=SupportsResponse.OPTIONAL,
         )
 
