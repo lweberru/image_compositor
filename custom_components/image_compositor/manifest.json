@@ -1,7 +1,7 @@
 {
   "domain": "image_compositor",
   "name": "Image Compositor",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "documentation": "https://github.com/lweberru/image_compositor",
   "requirements": ["Pillow==10.4.0"],
   "config_flow": true,
