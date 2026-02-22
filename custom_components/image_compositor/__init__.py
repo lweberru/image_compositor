@@ -248,27 +248,61 @@ def _extract_gemini_image_bytes(payload: dict[str, Any]) -> bytes:
     raise ValueError("Gemini response missing inline image data")
 
 
-async def _gemini_generate_image(
+async def _gemini_list_candidate_models(hass: HomeAssistant, api_key: str) -> list[str]:
+    session = aiohttp_client.async_get_clientsession(hass)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+
+    try:
+        async with session.get(url) as resp:
+            if resp.status >= 400:
+                return []
+            data = await resp.json()
+    except Exception:  # noqa: BLE001
+        return []
+
+    models = data.get("models") or []
+    result: list[str] = []
+    for item in models:
+        name = str(item.get("name") or "")
+        if name.startswith("models/"):
+            name = name[len("models/") :]
+        methods = item.get("supportedGenerationMethods") or []
+        if not name or "generateContent" not in methods:
+            continue
+        lower_name = name.lower()
+        if "image" in lower_name or "imagen" in lower_name:
+            result.append(name)
+
+    return result
+
+
+async def _gemini_generate_with_fallback(
     hass: HomeAssistant,
     api_key: str,
-    prompt: str,
     model: str,
-    provider_service_data: dict[str, Any] | None = None,
+    payload: dict[str, Any],
 ) -> bytes:
     session = aiohttp_client.async_get_clientsession(hass)
-    payload: dict[str, Any] = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
-    }
-    if provider_service_data:
-        payload.update(provider_service_data)
 
-    fallback_model = "imagen-3.0-generate-002"
-    models_to_try: list[str] = [model]
-    if model != fallback_model:
-        models_to_try.append(fallback_model)
+    known_fallbacks = [
+        "gemini-2.0-flash-preview-image-generation",
+        "gemini-2.5-flash-image-preview",
+    ]
+    discovered = await _gemini_list_candidate_models(hass, api_key)
 
-    last_error: str | None = None
+    mapped_model = model
+    if model.lower().startswith("imagen-"):
+        mapped_model = "gemini-2.0-flash-preview-image-generation"
+
+    ordered_candidates = [mapped_model, *known_fallbacks, *discovered]
+    deduped: list[str] = []
+    for candidate in ordered_candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    models_to_try = deduped[:8]
+
+    errors: list[str] = []
+
     for model_name in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         async with session.post(
@@ -276,17 +310,43 @@ async def _gemini_generate_image(
             headers={"Content-Type": "application/json"},
             json=payload,
         ) as resp:
-            if resp.status == 404 and model_name != models_to_try[-1]:
-                last_error = f"model not found: {model_name}"
-                continue
             if resp.status >= 400:
                 error_text = await resp.text()
+                errors.append(f"{model_name}: {resp.status}")
+                unsupported = (
+                    "not found" in error_text.lower()
+                    or "not supported for generatecontent" in error_text.lower()
+                    or "unsupported" in error_text.lower()
+                )
+                if unsupported:
+                    continue
                 raise ValueError(f"Gemini API error {resp.status}: {error_text}")
 
             data = await resp.json()
-            return _extract_gemini_image_bytes(data)
+            try:
+                return _extract_gemini_image_bytes(data)
+            except ValueError as err:
+                errors.append(f"{model_name}: {err}")
+                continue
 
-    raise ValueError(last_error or "Gemini image generation failed")
+    joined_errors = " | ".join(errors[:6]) if errors else "no compatible Gemini image model found"
+    raise ValueError(f"Gemini image generation failed. Tried models: {joined_errors}")
+
+
+async def _gemini_generate_image(
+    hass: HomeAssistant,
+    api_key: str,
+    prompt: str,
+    model: str,
+    provider_service_data: dict[str, Any] | None = None,
+) -> bytes:
+    payload: dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    if provider_service_data:
+        payload.update(provider_service_data)
+    return await _gemini_generate_with_fallback(hass, api_key, model, payload)
 
 
 async def _gemini_edit_image(
@@ -298,7 +358,6 @@ async def _gemini_edit_image(
     model: str,
     provider_service_data: dict[str, Any] | None = None,
 ) -> bytes:
-    session = aiohttp_client.async_get_clientsession(hass)
     parts: list[dict[str, Any]] = [
         {
             "text": (
@@ -340,31 +399,7 @@ async def _gemini_edit_image(
     }
     if provider_service_data:
         payload.update(provider_service_data)
-
-    fallback_model = "imagen-3.0-generate-002"
-    models_to_try: list[str] = [model]
-    if model != fallback_model:
-        models_to_try.append(fallback_model)
-
-    last_error: str | None = None
-    for model_name in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        async with session.post(
-            url,
-            headers={"Content-Type": "application/json"},
-            json=payload,
-        ) as resp:
-            if resp.status == 404 and model_name != models_to_try[-1]:
-                last_error = f"model not found: {model_name}"
-                continue
-            if resp.status >= 400:
-                error_text = await resp.text()
-                raise ValueError(f"Gemini API error {resp.status}: {error_text}")
-
-            data = await resp.json()
-            return _extract_gemini_image_bytes(data)
-
-    raise ValueError(last_error or "Gemini image editing failed")
+    return await _gemini_generate_with_fallback(hass, api_key, model, payload)
 
 
 def _extract_ai_task_urls(payload: Any) -> list[str]:
@@ -591,7 +626,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
             elif provider_type == "gemini":
                 api_key = provider.get("api_key") or provider.get("token")
-                model = str(provider.get("model") or "imagen-3.0-generate-002")
+                model = str(provider.get("model") or "gemini-2.0-flash-preview-image-generation")
                 mask_url = asset.get("mask_url") or asset.get("mask")
 
                 provider_service_data = provider.get("service_data")

@@ -114,7 +114,7 @@ Generates and caches assets via Home Assistant `ai_task.generate_image`, OpenAI,
    - `model` (openai): Image model (e.g. `gpt-image-1`).
    - `size` (openai, optional): Output size (e.g. `1024x1024`).
    - `api_key` (gemini): Google AI API key.
-  - `model` (gemini, optional): Image-capable Gemini model (default `imagen-3.0-generate-002`).
+  - `model` (gemini, optional): Image-capable Gemini model (default `gemini-2.0-flash-preview-image-generation`).
    - `service_data` (gemini, optional): Extra payload fields for `generateContent`.
  - `assets` (required): List of asset specs.
    - `name`, `prompt`, `filename` (required)
@@ -132,7 +132,7 @@ data:
   provider:
     type: gemini
     api_key: !secret google_ai_api_key
-    model: imagen-3.0-generate-002
+    model: gemini-2.0-flash-preview-image-generation
   assets:
     - name: base_front
       prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
@@ -197,7 +197,7 @@ data:
   provider:
     type: gemini
     api_key: !secret google_ai_api_key
-    model: imagen-3.0-generate-002
+    model: gemini-2.0-flash-preview-image-generation
   assets:
     - name: base
       prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
