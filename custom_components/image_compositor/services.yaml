@@ -121,7 +121,7 @@ ensure_assets:
         object:
     assets:
       name: Assets
-      description: List of assets to generate (name, prompt, filename, mask_url, base_ref, base_image, derive_overlay, attempts, postprocess=icon_overlay, icon_max_size).
+      description: List of assets to generate (name, prompt, filename, mask_url, base_ref, base_image, derive_overlay, attempts, postprocess=icon_overlay|composite_with_base, icon_max_size).
       required: true
       selector:
         object:

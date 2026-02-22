@@ -264,6 +264,24 @@ def _postprocess_icon_overlay(
     return out.getvalue()
 
 
+def _postprocess_composite_with_base(base_bytes: bytes, image_bytes: bytes) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    base_img = Image.open(BytesIO(base_bytes)).convert("RGBA")
+    edited_img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    if edited_img.size != base_img.size:
+        edited_img = edited_img.resize(base_img.size)
+
+    composed = base_img.copy()
+    composed.alpha_composite(edited_img)
+
+    out = BytesIO()
+    composed.save(out, format="PNG")
+    return out.getvalue()
+
+
 def _mask_target_constraint_text(target_name: str) -> str:
     key = str(target_name or "").lower()
     rules = [
@@ -1262,6 +1280,12 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         238,
                         42,
                         max_size,
+                    )
+                elif postprocess == "composite_with_base" and base_bytes:
+                    image_bytes = await hass.async_add_executor_job(
+                        _postprocess_composite_with_base,
+                        base_bytes,
+                        image_bytes,
                     )
 
                 full_path.write_bytes(image_bytes)
