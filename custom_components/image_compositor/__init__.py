@@ -307,6 +307,21 @@ def _target_roi_candidates(target_name: str) -> list[tuple[float, float, float, 
     key = str(target_name or "").lower()
 
     if key.startswith("door_") or key.startswith("window_"):
+        if key.startswith("window_"):
+            # Narrower ROIs for window targets (two mirrored orientation hypotheses).
+            if "front" in key:
+                return [
+                    (0.12, 0.32, 0.36, 0.58),
+                    (0.64, 0.32, 0.88, 0.58),
+                    (0.08, 0.26, 0.92, 0.62),
+                ]
+            if "rear" in key:
+                return [
+                    (0.38, 0.28, 0.68, 0.56),
+                    (0.32, 0.28, 0.62, 0.56),
+                    (0.08, 0.24, 0.92, 0.62),
+                ]
+
         if "front" in key:
             y0, y1 = (0.28, 0.74)
         elif "rear" in key:
@@ -370,6 +385,51 @@ def _apply_target_roi_to_mask(mask_bytes: bytes, target_name: str) -> bytes:
 
     out = BytesIO()
     best_mask.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _synthesize_window_fallback_mask(mask_bytes: bytes, target_name: str) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    src = Image.open(BytesIO(mask_bytes)).convert("L")
+    src = src.point(lambda p: 255 if p > 127 else 0)
+    width, height = src.size
+    candidates = _target_roi_candidates(target_name)
+
+    best_box: tuple[int, int, int, int] | None = None
+    best_score = -1
+    for x0, y0, x1, y1 in candidates[:2]:
+        left = max(0, min(width, int(width * x0)))
+        top = max(0, min(height, int(height * y0)))
+        right = max(left + 1, min(width, int(width * x1)))
+        bottom = max(top + 1, min(height, int(height * y1)))
+        score = int(sum(src.crop((left, top, right, bottom)).histogram()[1:]))
+        if score > best_score:
+            best_score = score
+            best_box = (left, top, right, bottom)
+
+    if not best_box:
+        # ultimate fallback
+        best_box = (
+            int(width * 0.2),
+            int(height * 0.3),
+            int(width * 0.55),
+            int(height * 0.56),
+        )
+
+    out_mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(out_mask)
+    left, top, right, bottom = best_box
+    radius = max(2, int((bottom - top) * 0.12))
+    try:
+        draw.rounded_rectangle([left, top, right, bottom], radius=radius, fill=255)
+    except Exception:  # noqa: BLE001
+        draw.rectangle([left, top, right, bottom], fill=255)
+
+    out = BytesIO()
+    out_mask.save(out, format="PNG")
     return out.getvalue()
 
 
@@ -978,6 +1038,14 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         if _penalty(retry_ratio) < _penalty(ratio):
                             mask_bytes = retry_mask_bytes
                             ratio = retry_ratio
+
+                if str(name).lower().startswith("window_") and ratio < min_ratio:
+                    mask_bytes = await hass.async_add_executor_job(
+                        _synthesize_window_fallback_mask,
+                        mask_bytes,
+                        name,
+                    )
+                    ratio = await hass.async_add_executor_job(_mask_ratio, mask_bytes)
 
                 full_path.write_bytes(mask_bytes)
                 results.append(
