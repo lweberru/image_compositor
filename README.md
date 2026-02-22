@@ -101,18 +101,21 @@ data:
 
 ### `image_compositor.ensure_assets`
 
-Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenAI (generations/edits). Optionally applies a mask or derives an overlay from a base image.
+Generates and caches assets via Home Assistant `ai_task.generate_image`, OpenAI, or Google Gemini (generations/edits). Optionally applies a mask or derives an overlay from a base image.
 
 **Fields**
  - `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor/assets`).
  - `task_name_prefix` (optional): Prefix for `ai_task` task names.
  - `provider` (optional): Provider config.
-   - `type`: `ai_task` or `openai`.
+  - `type`: `ai_task`, `openai`, or `gemini`.
    - `entity_id` (ai_task): Target ai_task entity.
    - `service_data` (ai_task, optional): Extra ai_task service data.
    - `api_key` (openai): OpenAI API key.
    - `model` (openai): Image model (e.g. `gpt-image-1`).
    - `size` (openai, optional): Output size (e.g. `1024x1024`).
+   - `api_key` (gemini): Google AI API key.
+   - `model` (gemini, optional): Image-capable Gemini model (default `gemini-2.5-flash-image-preview`).
+   - `service_data` (gemini, optional): Extra payload fields for `generateContent`.
  - `assets` (required): List of asset specs.
    - `name`, `prompt`, `filename` (required)
   - `mask_url` (optional): Mask for transparency or inpainting (recommended for best alignment).
@@ -121,6 +124,26 @@ Generates and caches assets via Home Assistant `ai_task.generate_image` or OpenA
   - `base_ref` (openai, optional): Name of another asset to use as base.
   - `base_image` (openai, optional): Base image URL or `/local/...`.
    - `derive_overlay` (openai, optional): Derive overlay by diffing base and edited image.
+
+### Example: ensure_assets (Gemini inpainting)
+```yaml
+service: image_compositor.ensure_assets
+data:
+  provider:
+    type: gemini
+    api_key: !secret google_ai_api_key
+    model: gemini-2.5-flash-image-preview
+  assets:
+    - name: base_front
+      prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
+      filename: base_front.png
+    - name: door_fl_open
+      prompt: "Same car and view, front left door open"
+      filename: door_fl_open.png
+      mask_url: /local/masks/door_fl_mask.png
+      base_ref: base_front
+      derive_overlay: true
+```
 
 **Response**
  - `assets`: List of generated asset records (`name`, `local_url`, `filename`, `cached`, `error`).

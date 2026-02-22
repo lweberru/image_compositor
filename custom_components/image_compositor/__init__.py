@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 import base64
+import json
 from urllib.parse import urlparse
 
 import voluptuous as vol
@@ -230,6 +231,114 @@ async def _openai_generate_image(
         return base64.b64decode(b64)
 
 
+def _extract_gemini_image_bytes(payload: dict[str, Any]) -> bytes:
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        raise ValueError("Gemini response missing candidates")
+
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            inline_data = part.get("inlineData") or part.get("inline_data") or {}
+            b64 = inline_data.get("data")
+            if b64:
+                return base64.b64decode(b64)
+
+    raise ValueError("Gemini response missing inline image data")
+
+
+async def _gemini_generate_image(
+    hass: HomeAssistant,
+    api_key: str,
+    prompt: str,
+    model: str,
+    provider_service_data: dict[str, Any] | None = None,
+) -> bytes:
+    session = aiohttp_client.async_get_clientsession(hass)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    payload: dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    if provider_service_data:
+        payload.update(provider_service_data)
+
+    async with session.post(
+        url,
+        headers={"Content-Type": "application/json"},
+        json=payload,
+    ) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+        return _extract_gemini_image_bytes(data)
+
+
+async def _gemini_edit_image(
+    hass: HomeAssistant,
+    api_key: str,
+    base_bytes: bytes,
+    mask_bytes: bytes | None,
+    prompt: str,
+    model: str,
+    provider_service_data: dict[str, Any] | None = None,
+) -> bytes:
+    session = aiohttp_client.async_get_clientsession(hass)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+
+    parts: list[dict[str, Any]] = [
+        {
+            "text": (
+                f"Edit this image according to the instruction: {prompt}. "
+                "Return an image result."
+            )
+        },
+        {
+            "inline_data": {
+                "mime_type": "image/png",
+                "data": base64.b64encode(base_bytes).decode("utf-8"),
+            }
+        },
+    ]
+
+    if mask_bytes:
+        parts.insert(
+            1,
+            {
+                "text": (
+                    "Use the following mask image to constrain the edited region "
+                    "(white = editable, black = preserve)."
+                )
+            },
+        )
+        parts.insert(
+            2,
+            {
+                "inline_data": {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(mask_bytes).decode("utf-8"),
+                }
+            },
+        )
+
+    payload: dict[str, Any] = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    if provider_service_data:
+        payload.update(provider_service_data)
+
+    async with session.post(
+        url,
+        headers={"Content-Type": "application/json"},
+        json=payload,
+    ) as resp:
+        resp.raise_for_status()
+        data = await resp.json()
+        return _extract_gemini_image_bytes(data)
+
+
 def _extract_ai_task_urls(payload: Any) -> list[str]:
     if not payload:
         return []
@@ -446,6 +555,49 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                             else:
                                 image_bytes = await _openai_generate_image(
                                     hass, api_key, prompt, model, size
+                                )
+                            if image_bytes:
+                                break
+                        except Exception as err:  # noqa: BLE001
+                            last_error = str(err)
+
+            elif provider_type == "gemini":
+                api_key = provider.get("api_key") or provider.get("token")
+                model = str(provider.get("model") or "gemini-2.5-flash-image-preview")
+                mask_url = asset.get("mask_url") or asset.get("mask")
+
+                provider_service_data = provider.get("service_data")
+                if provider_service_data and not isinstance(provider_service_data, dict):
+                    try:
+                        provider_service_data = json.loads(str(provider_service_data))
+                    except Exception:  # noqa: BLE001
+                        provider_service_data = None
+
+                if not api_key:
+                    last_error = "gemini api_key missing"
+                else:
+                    for _ in range(max(1, attempts)):
+                        try:
+                            if base_bytes:
+                                mask_bytes = None
+                                if mask_url:
+                                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                                image_bytes = await _gemini_edit_image(
+                                    hass,
+                                    api_key,
+                                    base_bytes,
+                                    mask_bytes,
+                                    prompt,
+                                    model,
+                                    provider_service_data=provider_service_data,
+                                )
+                            else:
+                                image_bytes = await _gemini_generate_image(
+                                    hass,
+                                    api_key,
+                                    prompt,
+                                    model,
+                                    provider_service_data=provider_service_data,
                                 )
                             if image_bytes:
                                 break

@@ -90,7 +90,7 @@ clear_cache:
 
 ensure_assets:
   name: Ensure assets
-  description: Generate and cache assets via ai_task or OpenAI (edits or generations). Masks are optional.
+  description: Generate and cache assets via ai_task, OpenAI, or Google Gemini (edits or generations). Masks are optional.
   fields:
     output_path:
       name: Output path
@@ -108,7 +108,7 @@ ensure_assets:
         text:
     provider:
       name: Provider
-      description: Provider config (type=ai_task|openai, entity_id, api_key, model, size, service_data).
+      description: Provider config (type=ai_task|openai|gemini, entity_id, api_key, model, size, service_data).
       required: false
       selector:
         object:
