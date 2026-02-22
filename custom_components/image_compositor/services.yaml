@@ -153,7 +153,7 @@ generate_masks:
         text:
     provider:
       name: Provider
-      description: Provider config (type=openai|gemini, api_key, model, size, service_data).
+      description: Provider config (type=openai|gemini, api_key, model, size, service_data). For gemini masks, low temperature defaults are applied unless overridden in service_data.generationConfig.
       required: true
       selector:
         object:
@@ -172,9 +172,9 @@ generate_masks:
         text:
     threshold:
       name: Diff threshold
-      description: Difference threshold for binary mask generation (default 12).
+      description: Difference threshold for binary mask generation (default 16). Higher values suppress small pixel noise.
       required: false
-      example: 12
+      example: 16
       selector:
         number:
           min: 1

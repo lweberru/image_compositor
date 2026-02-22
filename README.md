@@ -112,7 +112,8 @@ This service is also used by the BMW Status Card editor button **"Masken automat
  - `output_path` (optional): Where masks are written (default: `www/image_compositor/masks`).
  - `base_view` / `base_prompt` (optional): Prompt context for target generation.
  - `targets` (optional): Target list (`name`, `description`, `prompt`, `filename`).
- - `threshold` (optional): Binary diff threshold (default: `12`).
+- `threshold` (optional): Binary diff threshold (default: `16`).
+- For `provider.type: gemini`, mask generation uses a low default temperature (`0.1`) unless overridden via `provider.service_data.generationConfig.temperature`.
 
 **Response**
  - `masks`: List of generated masks (`name`, `local_url`, `filename`, `error`).

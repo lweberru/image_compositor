@@ -202,7 +202,7 @@ def _derive_overlay_from_base(base_bytes: bytes, edited_bytes: bytes, threshold:
 def _derive_binary_mask_from_base(base_bytes: bytes, edited_bytes: bytes, threshold: int = 12) -> bytes:
     from io import BytesIO
 
-    from PIL import Image, ImageChops
+    from PIL import Image, ImageChops, ImageFilter
 
     base_img = Image.open(BytesIO(base_bytes)).convert("RGBA")
     edited_img = Image.open(BytesIO(edited_bytes)).convert("RGBA")
@@ -212,6 +212,10 @@ def _derive_binary_mask_from_base(base_bytes: bytes, edited_bytes: bytes, thresh
 
     diff = ImageChops.difference(base_img, edited_img).convert("L")
     mask = diff.point(lambda p: 255 if p > threshold else 0)
+    mask = mask.filter(ImageFilter.MedianFilter(3))
+    mask = mask.filter(ImageFilter.MaxFilter(3))
+    mask = mask.filter(ImageFilter.MinFilter(3))
+    mask = mask.point(lambda p: 255 if p > 127 else 0)
 
     out = BytesIO()
     mask.save(out, format="PNG")
@@ -405,7 +409,18 @@ async def _gemini_generate_image(
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     if provider_service_data:
-        payload.update(provider_service_data)
+        generation_config = payload.get("generationConfig") or {}
+        provided_generation_config = provider_service_data.get("generationConfig")
+        if isinstance(provided_generation_config, dict):
+            generation_config = {
+                **generation_config,
+                **provided_generation_config,
+            }
+            payload["generationConfig"] = generation_config
+        for key, value in provider_service_data.items():
+            if key == "generationConfig":
+                continue
+            payload[key] = value
     return await _gemini_generate_with_fallback(hass, api_key, model, payload)
 
 
@@ -458,7 +473,18 @@ async def _gemini_edit_image(
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     if provider_service_data:
-        payload.update(provider_service_data)
+        generation_config = payload.get("generationConfig") or {}
+        provided_generation_config = provider_service_data.get("generationConfig")
+        if isinstance(provided_generation_config, dict):
+            generation_config = {
+                **generation_config,
+                **provided_generation_config,
+            }
+            payload["generationConfig"] = generation_config
+        for key, value in provider_service_data.items():
+            if key == "generationConfig":
+                continue
+            payload[key] = value
     return await _gemini_generate_with_fallback(hass, api_key, model, payload)
 
 
@@ -645,7 +671,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         base_prompt = str(
             call.data.get("base_prompt") or f"Same car and view ({base_view}), clean background"
         ).strip()
-        threshold = int(call.data.get("threshold") or 12)
+        threshold = int(call.data.get("threshold") or 16)
 
         raw_targets = call.data.get("targets") or DEFAULT_MASK_TARGETS
         targets: list[dict[str, str]] = []
@@ -678,6 +704,15 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             except Exception:  # noqa: BLE001
                 provider_service_data = None
 
+        if provider_type == "gemini":
+            if not isinstance(provider_service_data, dict):
+                provider_service_data = {}
+            generation_config = provider_service_data.get("generationConfig")
+            if not isinstance(generation_config, dict):
+                generation_config = {}
+            generation_config.setdefault("temperature", 0.1)
+            provider_service_data["generationConfig"] = generation_config
+
         model = str(
             provider.get("model")
             or ("gpt-image-1" if provider_type == "openai" else "gemini-2.0-flash-preview-image-generation")
@@ -691,7 +726,9 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             name = target.get("name") or "mask"
             description = target.get("description") or name.replace("_", " ")
             prompt = target.get("prompt") or (
-                f"{base_prompt} {description}, transparent background, only the opened part visible"
+                f"{base_prompt}. ONLY change this part: {description}. "
+                "Keep identical camera angle, vehicle scale, geometry, paint, reflections, background and lighting. "
+                "Do not alter any other region. Return a full-frame edited image."
             )
             filename = _safe_filename(target.get("filename") or name, "png")
             full_path = output_dir / filename
