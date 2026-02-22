@@ -114,16 +114,16 @@ Generates and caches assets via Home Assistant `ai_task.generate_image`, OpenAI,
    - `model` (openai): Image model (e.g. `gpt-image-1`).
    - `size` (openai, optional): Output size (e.g. `1024x1024`).
    - `api_key` (gemini): Google AI API key.
-   - `model` (gemini, optional): Image-capable Gemini model (default `gemini-2.5-flash-image-preview`).
+  - `model` (gemini, optional): Image-capable Gemini model (default `imagen-3.0-generate-002`).
    - `service_data` (gemini, optional): Extra payload fields for `generateContent`.
  - `assets` (required): List of asset specs.
    - `name`, `prompt`, `filename` (required)
   - `mask_url` (optional): Mask for transparency or inpainting (recommended for best alignment).
    - `format` (optional): `png` or `jpg`.
    - `attempts` (optional): Retry count.
-  - `base_ref` (openai, optional): Name of another asset to use as base.
-  - `base_image` (openai, optional): Base image URL or `/local/...`.
-   - `derive_overlay` (openai, optional): Derive overlay by diffing base and edited image.
+  - `base_ref` (openai/gemini, optional): Name of another asset to use as base.
+  - `base_image` (openai/gemini, optional): Base image URL or `/local/...`.
+   - `derive_overlay` (openai/gemini, optional): Derive overlay by diffing base and edited image.
 
 ### Example: ensure_assets (Gemini inpainting)
 ```yaml
@@ -132,7 +132,7 @@ data:
   provider:
     type: gemini
     api_key: !secret google_ai_api_key
-    model: gemini-2.5-flash-image-preview
+    model: imagen-3.0-generate-002
   assets:
     - name: base_front
       prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
@@ -169,7 +169,7 @@ data:
       derive_overlay: true
 ```
 
-### Example: ensure_assets
+### Example: ensure_assets (ai_task, no inpainting)
 ```yaml
 service: image_compositor.ensure_assets
 data:
@@ -187,14 +187,17 @@ data:
       mask_url: /local/masks/door_fl_mask.png
 ```
 
-### Example: ensure_assets (BMW full set)
+Note: `ai_task` image generation does not provide deterministic inpainting against a fixed base image. For exact BMW panel overlays (doors/windows/hood/trunk/sunroof aligned to the base), use `openai` or `gemini` with `base_ref`/`base_image` and `derive_overlay` (plus masks where available).
+
+### Example: ensure_assets (BMW full set, Gemini inpainting)
 ```yaml
 service: image_compositor.ensure_assets
 data:
   task_name_prefix: BMW Assets
   provider:
-    type: ai_task
-    entity_id: ai_task.google_ai_task
+    type: gemini
+    api_key: !secret google_ai_api_key
+    model: imagen-3.0-generate-002
   assets:
     - name: base
       prompt: "Studio photo of a 2023 BMW 320d, front 3/4 view, clean background"
@@ -202,39 +205,63 @@ data:
     - name: door_front_left_open
       prompt: "Same car and view, front left door open, transparent background, only the opened part visible"
       filename: door_front_left_open.png
+      base_ref: base
+      derive_overlay: true
     - name: door_front_right_open
       prompt: "Same car and view, front right door open, transparent background, only the opened part visible"
       filename: door_front_right_open.png
+      base_ref: base
+      derive_overlay: true
     - name: door_rear_left_open
       prompt: "Same car and view, rear left door open, transparent background, only the opened part visible"
       filename: door_rear_left_open.png
+      base_ref: base
+      derive_overlay: true
     - name: door_rear_right_open
       prompt: "Same car and view, rear right door open, transparent background, only the opened part visible"
       filename: door_rear_right_open.png
+      base_ref: base
+      derive_overlay: true
     - name: window_front_left_open
       prompt: "Same car and view, front left window open, transparent background, only the opened part visible"
       filename: window_front_left_open.png
+      base_ref: base
+      derive_overlay: true
     - name: window_front_right_open
       prompt: "Same car and view, front right window open, transparent background, only the opened part visible"
       filename: window_front_right_open.png
+      base_ref: base
+      derive_overlay: true
     - name: window_rear_left_open
       prompt: "Same car and view, rear left window open, transparent background, only the opened part visible"
       filename: window_rear_left_open.png
+      base_ref: base
+      derive_overlay: true
     - name: window_rear_right_open
       prompt: "Same car and view, rear right window open, transparent background, only the opened part visible"
       filename: window_rear_right_open.png
+      base_ref: base
+      derive_overlay: true
     - name: hood_open
       prompt: "Same car and view, hood open, transparent background, only the opened part visible"
       filename: hood_open.png
+      base_ref: base
+      derive_overlay: true
     - name: trunk_open
       prompt: "Same car and view, trunk open, transparent background, only the opened part visible"
       filename: trunk_open.png
+      base_ref: base
+      derive_overlay: true
     - name: sunroof_open
       prompt: "Same car and view, sunroof open, transparent background, only the opened part visible"
       filename: sunroof_open.png
+      base_ref: base
+      derive_overlay: true
     - name: sunroof_tilt
       prompt: "Same car and view, sunroof tilted, transparent background, only the opened part visible"
       filename: sunroof_tilt.png
+      base_ref: base
+      derive_overlay: true
     - name: tire_ok
       prompt: "Small green circle icon, transparent background"
       filename: tire_ok.png

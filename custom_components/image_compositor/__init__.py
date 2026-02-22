@@ -256,8 +256,6 @@ async def _gemini_generate_image(
     provider_service_data: dict[str, Any] | None = None,
 ) -> bytes:
     session = aiohttp_client.async_get_clientsession(hass)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-
     payload: dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
@@ -265,14 +263,30 @@ async def _gemini_generate_image(
     if provider_service_data:
         payload.update(provider_service_data)
 
-    async with session.post(
-        url,
-        headers={"Content-Type": "application/json"},
-        json=payload,
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-        return _extract_gemini_image_bytes(data)
+    fallback_model = "imagen-3.0-generate-002"
+    models_to_try: list[str] = [model]
+    if model != fallback_model:
+        models_to_try.append(fallback_model)
+
+    last_error: str | None = None
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        async with session.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as resp:
+            if resp.status == 404 and model_name != models_to_try[-1]:
+                last_error = f"model not found: {model_name}"
+                continue
+            if resp.status >= 400:
+                error_text = await resp.text()
+                raise ValueError(f"Gemini API error {resp.status}: {error_text}")
+
+            data = await resp.json()
+            return _extract_gemini_image_bytes(data)
+
+    raise ValueError(last_error or "Gemini image generation failed")
 
 
 async def _gemini_edit_image(
@@ -285,8 +299,6 @@ async def _gemini_edit_image(
     provider_service_data: dict[str, Any] | None = None,
 ) -> bytes:
     session = aiohttp_client.async_get_clientsession(hass)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-
     parts: list[dict[str, Any]] = [
         {
             "text": (
@@ -329,14 +341,30 @@ async def _gemini_edit_image(
     if provider_service_data:
         payload.update(provider_service_data)
 
-    async with session.post(
-        url,
-        headers={"Content-Type": "application/json"},
-        json=payload,
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-        return _extract_gemini_image_bytes(data)
+    fallback_model = "imagen-3.0-generate-002"
+    models_to_try: list[str] = [model]
+    if model != fallback_model:
+        models_to_try.append(fallback_model)
+
+    last_error: str | None = None
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        async with session.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        ) as resp:
+            if resp.status == 404 and model_name != models_to_try[-1]:
+                last_error = f"model not found: {model_name}"
+                continue
+            if resp.status >= 400:
+                error_text = await resp.text()
+                raise ValueError(f"Gemini API error {resp.status}: {error_text}")
+
+            data = await resp.json()
+            return _extract_gemini_image_bytes(data)
+
+    raise ValueError(last_error or "Gemini image editing failed")
 
 
 def _extract_ai_task_urls(payload: Any) -> list[str]:
@@ -563,7 +591,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
             elif provider_type == "gemini":
                 api_key = provider.get("api_key") or provider.get("token")
-                model = str(provider.get("model") or "gemini-2.5-flash-image-preview")
+                model = str(provider.get("model") or "imagen-3.0-generate-002")
                 mask_url = asset.get("mask_url") or asset.get("mask")
 
                 provider_service_data = provider.get("service_data")
