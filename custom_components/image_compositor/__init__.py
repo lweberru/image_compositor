@@ -222,6 +222,48 @@ def _derive_binary_mask_from_base(base_bytes: bytes, edited_bytes: bytes, thresh
     return out.getvalue()
 
 
+def _postprocess_icon_overlay(
+    image_bytes: bytes,
+    *,
+    light_threshold: int = 238,
+    low_saturation_threshold: int = 42,
+    max_size: int | None = 96,
+) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    hsv = img.convert("HSV")
+
+    rgba_data = list(img.getdata())
+    hsv_data = list(hsv.getdata())
+    processed: list[tuple[int, int, int, int]] = []
+
+    for (r, g, b, a), (_h, s, v) in zip(rgba_data, hsv_data):
+        if a == 0:
+            processed.append((r, g, b, 0))
+            continue
+        if v >= light_threshold and s <= low_saturation_threshold:
+            processed.append((r, g, b, 0))
+            continue
+        processed.append((r, g, b, a))
+
+    img.putdata(processed)
+
+    alpha = img.getchannel("A")
+    bbox = alpha.getbbox()
+    if bbox:
+        img = img.crop(bbox)
+
+    if max_size and max_size > 0:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
 async def _openai_edit_image(
     hass: HomeAssistant,
     api_key: str,
@@ -957,6 +999,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             try:
                 mask_url = asset.get("mask_url") or asset.get("mask")
                 derive_overlay = bool(asset.get("derive_overlay"))
+                postprocess = str(asset.get("postprocess") or "").strip().lower()
 
                 if derive_overlay and base_bytes:
                     image_bytes = await hass.async_add_executor_job(
@@ -966,6 +1009,24 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                     mask_bytes = await _try_fetch_optional_image_bytes(hass, str(mask_url))
                     if mask_bytes:
                         image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
+
+                if postprocess == "icon_overlay":
+                    max_size_raw = asset.get("icon_max_size")
+                    max_size: int | None = None
+                    if max_size_raw not in (None, ""):
+                        try:
+                            max_size = max(1, int(max_size_raw))
+                        except Exception:  # noqa: BLE001
+                            max_size = 96
+                    else:
+                        max_size = 96
+                    image_bytes = await hass.async_add_executor_job(
+                        _postprocess_icon_overlay,
+                        image_bytes,
+                        238,
+                        42,
+                        max_size,
+                    )
 
                 full_path.write_bytes(image_bytes)
 
