@@ -103,6 +103,8 @@ data:
 
 Auto-generates mask PNGs by editing a base image per target and deriving a binary diff mask.
 
+This service is also used by the BMW Status Card editor button **"Masken automatisch erzeugen"**.
+
 **Fields**
  - `provider` (required): `type` (`gemini` or `openai`), `api_key`, optional `model`, optional `size` (OpenAI), optional `service_data`.
  - `base_image` (optional): Base image URL or `/local/...`. If omitted, latest `*_base.png` from `asset_path` is used.
@@ -135,6 +137,7 @@ Generates and caches assets via Home Assistant `ai_task.generate_image`, OpenAI,
 **Fields**
  - `output_path` (optional): Target path relative to `/config` (default: `www/image_compositor/assets`).
  - `task_name_prefix` (optional): Prefix for `ai_task` task names.
+ - `force` (optional): If `true`, regenerate assets even when files already exist.
  - `provider` (optional): Provider config.
   - `type`: `ai_task`, `openai`, or `gemini`.
    - `entity_id` (ai_task): Target ai_task entity.

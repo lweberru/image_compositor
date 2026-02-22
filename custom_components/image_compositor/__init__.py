@@ -71,6 +71,7 @@ ENSURE_ASSETS_SCHEMA = vol.Schema(
         vol.Optional("output_path"): str,
         vol.Optional("task_name_prefix"): str,
         vol.Optional("provider", default={}): dict,
+        vol.Optional("force", default=False): bool,
         vol.Required("assets"): list,
     }
 )
@@ -756,6 +757,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         provider = call.data.get("provider") or {}
+        force_generation = bool(call.data.get("force"))
         task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor")
         assets = call.data.get("assets") or []
 
@@ -772,7 +774,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             filename = _safe_filename(asset.get("filename") or name, output_format)
             full_path = output_dir / filename
 
-            if full_path.exists():
+            if full_path.exists() and not force_generation:
                 results.append(
                     {
                         "name": name,

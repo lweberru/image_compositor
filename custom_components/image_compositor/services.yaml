@@ -106,6 +106,13 @@ ensure_assets:
       example: BMW Assets
       selector:
         text:
+    force:
+      name: Force regeneration
+      description: Regenerate assets even if target files already exist.
+      required: false
+      example: true
+      selector:
+        boolean:
     provider:
       name: Provider
       description: Provider config (type=ai_task|openai|gemini, entity_id, api_key, model, size, service_data).
