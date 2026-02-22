@@ -99,6 +99,35 @@ data:
   prefix: bmw_state_
 ```
 
+### `image_compositor.generate_masks`
+
+Auto-generates mask PNGs by editing a base image per target and deriving a binary diff mask.
+
+**Fields**
+ - `provider` (required): `type` (`gemini` or `openai`), `api_key`, optional `model`, optional `size` (OpenAI), optional `service_data`.
+ - `base_image` (optional): Base image URL or `/local/...`. If omitted, latest `*_base.png` from `asset_path` is used.
+ - `asset_path` (optional): Where to auto-detect `*_base.png` (default: `www/image_compositor/assets`).
+ - `output_path` (optional): Where masks are written (default: `www/image_compositor/masks`).
+ - `base_view` / `base_prompt` (optional): Prompt context for target generation.
+ - `targets` (optional): Target list (`name`, `description`, `prompt`, `filename`).
+ - `threshold` (optional): Binary diff threshold (default: `12`).
+
+**Response**
+ - `masks`: List of generated masks (`name`, `local_url`, `filename`, `error`).
+
+### Example: generate_masks
+```yaml
+service: image_compositor.generate_masks
+data:
+  provider:
+    type: gemini
+    api_key: !secret google_ai_api_key
+    model: gemini-2.0-flash-preview-image-generation
+  asset_path: www/image_compositor/assets
+  output_path: www/image_compositor/masks
+  base_view: "front 3/4 view"
+```
+
 ### `image_compositor.ensure_assets`
 
 Generates and caches assets via Home Assistant `ai_task.generate_image`, OpenAI, or Google Gemini (generations/edits). Optionally applies a mask or derives an overlay from a base image.

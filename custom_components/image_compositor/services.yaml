@@ -118,3 +118,64 @@ ensure_assets:
       required: true
       selector:
         object:
+
+generate_masks:
+  name: Generate masks
+  description: Auto-generate binary mask images from a base image by AI-editing each target and diffing against the base.
+  fields:
+    output_path:
+      name: Output path
+      description: Target path relative to /config (default www/image_compositor/masks).
+      required: false
+      example: www/image_compositor/masks
+      selector:
+        text:
+    asset_path:
+      name: Asset path
+      description: Path for base auto-detection (default www/image_compositor/assets).
+      required: false
+      example: www/image_compositor/assets
+      selector:
+        text:
+    base_image:
+      name: Base image
+      description: Optional base image URL or /local/... (if omitted, latest *_base.png in asset_path is used).
+      required: false
+      example: /local/image_compositor/assets/bmw_base.png
+      selector:
+        text:
+    provider:
+      name: Provider
+      description: Provider config (type=openai|gemini, api_key, model, size, service_data).
+      required: true
+      selector:
+        object:
+    base_view:
+      name: Base view
+      description: Optional view hint used in default prompts.
+      required: false
+      example: front 3/4 view
+      selector:
+        text:
+    base_prompt:
+      name: Base prompt
+      description: Optional prompt prefix used for target mask prompts.
+      required: false
+      selector:
+        text:
+    threshold:
+      name: Diff threshold
+      description: Difference threshold for binary mask generation (default 12).
+      required: false
+      example: 12
+      selector:
+        number:
+          min: 1
+          max: 255
+          mode: box
+    targets:
+      name: Targets
+      description: Optional list of mask targets (name, description, prompt, filename).
+      required: false
+      selector:
+        object:

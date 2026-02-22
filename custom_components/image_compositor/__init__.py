@@ -20,9 +20,26 @@ SERVICE_COMPOSE = "compose"
 SERVICE_EXISTS = "file_exists"
 SERVICE_CLEAR_CACHE = "clear_cache"
 SERVICE_ENSURE_ASSETS = "ensure_assets"
+SERVICE_GENERATE_MASKS = "generate_masks"
 
 OUTPUT_DIR_DEFAULT = "www/image_compositor"
 ASSET_DIR_DEFAULT = "www/image_compositor/assets"
+MASK_DIR_DEFAULT = "www/image_compositor/masks"
+
+DEFAULT_MASK_TARGETS: list[dict[str, str]] = [
+    {"name": "door_front_left_open", "description": "front left door open"},
+    {"name": "door_front_right_open", "description": "front right door open"},
+    {"name": "door_rear_left_open", "description": "rear left door open"},
+    {"name": "door_rear_right_open", "description": "rear right door open"},
+    {"name": "window_front_left_open", "description": "front left window open"},
+    {"name": "window_front_right_open", "description": "front right window open"},
+    {"name": "window_rear_left_open", "description": "rear left window open"},
+    {"name": "window_rear_right_open", "description": "rear right window open"},
+    {"name": "hood_open", "description": "hood open"},
+    {"name": "trunk_open", "description": "trunk or tailgate open"},
+    {"name": "sunroof_open", "description": "sunroof open"},
+    {"name": "sunroof_tilt", "description": "sunroof tilted"},
+]
 
 COMPOSE_SCHEMA = vol.Schema(
     {
@@ -55,6 +72,20 @@ ENSURE_ASSETS_SCHEMA = vol.Schema(
         vol.Optional("task_name_prefix"): str,
         vol.Optional("provider", default={}): dict,
         vol.Required("assets"): list,
+    }
+)
+
+GENERATE_MASKS_SCHEMA = vol.Schema(
+    {
+        vol.Optional("output_path"): str,
+        vol.Optional("asset_path"): str,
+        vol.Optional("task_name_prefix"): str,
+        vol.Optional("provider", default={}): dict,
+        vol.Optional("base_image"): str,
+        vol.Optional("base_prompt"): str,
+        vol.Optional("base_view"): str,
+        vol.Optional("threshold", default=12): int,
+        vol.Optional("targets"): list,
     }
 )
 
@@ -164,6 +195,25 @@ def _derive_overlay_from_base(base_bytes: bytes, edited_bytes: bytes, threshold:
 
     out = BytesIO()
     overlay.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _derive_binary_mask_from_base(base_bytes: bytes, edited_bytes: bytes, threshold: int = 12) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageChops
+
+    base_img = Image.open(BytesIO(base_bytes)).convert("RGBA")
+    edited_img = Image.open(BytesIO(edited_bytes)).convert("RGBA")
+
+    if edited_img.size != base_img.size:
+        edited_img = edited_img.resize(base_img.size)
+
+    diff = ImageChops.difference(base_img, edited_img).convert("L")
+    mask = diff.point(lambda p: 255 if p > threshold else 0)
+
+    out = BytesIO()
+    mask.save(out, format="PNG")
     return out.getvalue()
 
 
@@ -553,6 +603,153 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
         return {"deleted": deleted}
 
+    async def _handle_generate_masks(call: ServiceCall) -> dict[str, Any]:
+        output_path = _normalize_output_path(call.data.get("output_path") or MASK_DIR_DEFAULT)
+        output_dir = Path(hass.config.path(output_path))
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        asset_path = _normalize_output_path(call.data.get("asset_path") or ASSET_DIR_DEFAULT)
+        asset_dir = Path(hass.config.path(asset_path))
+
+        provider = call.data.get("provider") or {}
+        provider_type = str(provider.get("type") or "gemini").lower()
+        if provider_type not in {"gemini", "openai"}:
+            return {
+                "masks": [],
+                "error": "generate_masks supports only gemini/openai providers",
+            }
+
+        base_image = call.data.get("base_image")
+        if not base_image:
+            candidates = sorted(
+                asset_dir.glob("*_base.png"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                base_image = _local_url_from_path(asset_path, candidates[0].name)
+
+        if not base_image:
+            return {
+                "masks": [],
+                "error": "base_image missing and no *_base.png found in asset_path",
+            }
+
+        try:
+            base_bytes = await _fetch_image_bytes(hass, str(base_image))
+        except Exception as err:  # noqa: BLE001
+            return {"masks": [], "error": f"failed to read base_image: {err}"}
+
+        base_view = str(call.data.get("base_view") or "front 3/4 view").strip()
+        base_prompt = str(
+            call.data.get("base_prompt") or f"Same car and view ({base_view}), clean background"
+        ).strip()
+        threshold = int(call.data.get("threshold") or 12)
+
+        raw_targets = call.data.get("targets") or DEFAULT_MASK_TARGETS
+        targets: list[dict[str, str]] = []
+        for item in raw_targets:
+            if isinstance(item, str):
+                targets.append({"name": item, "description": item.replace("_", " ")})
+                continue
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("id") or "").strip()
+            if not name:
+                continue
+            targets.append(
+                {
+                    "name": name,
+                    "description": str(item.get("description") or name.replace("_", " ")),
+                    "prompt": str(item.get("prompt") or "").strip(),
+                    "filename": str(item.get("filename") or "").strip(),
+                }
+            )
+
+        api_key = provider.get("api_key") or provider.get("token")
+        if not api_key:
+            return {"masks": [], "error": f"{provider_type} api_key missing"}
+
+        provider_service_data = provider.get("service_data")
+        if provider_service_data and not isinstance(provider_service_data, dict):
+            try:
+                provider_service_data = json.loads(str(provider_service_data))
+            except Exception:  # noqa: BLE001
+                provider_service_data = None
+
+        model = str(
+            provider.get("model")
+            or ("gpt-image-1" if provider_type == "openai" else "gemini-2.0-flash-preview-image-generation")
+        )
+        openai_size = str(provider.get("size") or "1024x1024")
+
+        task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor Masks")
+        results: list[dict[str, Any]] = []
+
+        for target in targets:
+            name = target.get("name") or "mask"
+            description = target.get("description") or name.replace("_", " ")
+            prompt = target.get("prompt") or (
+                f"{base_prompt} {description}, transparent background, only the opened part visible"
+            )
+            filename = _safe_filename(target.get("filename") or name, "png")
+            full_path = output_dir / filename
+
+            edited_bytes: bytes | None = None
+            error: str | None = None
+            try:
+                if provider_type == "openai":
+                    edited_bytes = await _openai_edit_image(
+                        hass,
+                        str(api_key),
+                        base_bytes,
+                        None,
+                        prompt,
+                        model,
+                        openai_size,
+                    )
+                else:
+                    edited_bytes = await _gemini_edit_image(
+                        hass,
+                        str(api_key),
+                        base_bytes,
+                        None,
+                        prompt,
+                        model,
+                        provider_service_data=provider_service_data,
+                    )
+            except Exception as err:  # noqa: BLE001
+                error = str(err)
+
+            if not edited_bytes:
+                results.append({"name": name, "error": error or "no image returned"})
+                continue
+
+            try:
+                mask_bytes = await hass.async_add_executor_job(
+                    _derive_binary_mask_from_base,
+                    base_bytes,
+                    edited_bytes,
+                    threshold,
+                )
+                full_path.write_bytes(mask_bytes)
+                results.append(
+                    {
+                        "name": name,
+                        "local_url": _local_url_from_path(output_path, filename),
+                        "filename": str(full_path),
+                    }
+                )
+            except Exception as err:  # noqa: BLE001
+                results.append({"name": name, "error": str(err)})
+
+        return {
+            "base_image": str(base_image),
+            "provider": provider_type,
+            "task_name_prefix": task_name_prefix,
+            "masks": results,
+        }
+
     async def _handle_ensure_assets(call: ServiceCall) -> dict[str, Any]:
         output_path = _normalize_output_path(call.data.get("output_path") or ASSET_DIR_DEFAULT)
         output_dir = Path(hass.config.path(output_path))
@@ -785,6 +982,15 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             SERVICE_ENSURE_ASSETS,
             _handle_ensure_assets,
             schema=ENSURE_ASSETS_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_GENERATE_MASKS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_GENERATE_MASKS,
+            _handle_generate_masks,
+            schema=GENERATE_MASKS_SCHEMA,
             supports_response=SupportsResponse.OPTIONAL,
         )
 
