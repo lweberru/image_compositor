@@ -189,6 +189,8 @@ data:
 
 Note: `ai_task` image generation does not provide deterministic inpainting against a fixed base image. For exact BMW panel overlays (doors/windows/hood/trunk/sunroof aligned to the base), use `openai` or `gemini` with `base_ref`/`base_image` and `derive_overlay` (plus masks where available).
 
+If `mask_url` points to a file that does not exist, the asset generation continues without mask (best-effort fallback).
+
 ### Example: ensure_assets (BMW full set, Gemini inpainting)
 ```yaml
 service: image_compositor.ensure_assets

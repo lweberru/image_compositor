@@ -113,6 +113,15 @@ def _local_url_from_path(output_path: str, filename: str) -> str:
     return f"/local/{local_path}/{filename}" if local_path else f"/local/{filename}"
 
 
+async def _try_fetch_optional_image_bytes(hass: HomeAssistant, source: str | None) -> bytes | None:
+    if not source:
+        return None
+    try:
+        return await _fetch_image_bytes(hass, str(source))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _fetch_image_bytes(hass: HomeAssistant, source: str) -> bytes:
     if source.startswith("/local/") or source.startswith("local/"):
         local_path = _resolve_local_path(source)
@@ -609,9 +618,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                     for _ in range(max(1, attempts)):
                         try:
                             if base_bytes:
-                                mask_bytes = None
-                                if mask_url:
-                                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                                mask_bytes = await _try_fetch_optional_image_bytes(hass, str(mask_url) if mask_url else None)
                                 image_bytes = await _openai_edit_image(
                                     hass, api_key, base_bytes, mask_bytes, prompt, model, size
                                 )
@@ -642,9 +649,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                     for _ in range(max(1, attempts)):
                         try:
                             if base_bytes:
-                                mask_bytes = None
-                                if mask_url:
-                                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
+                                mask_bytes = await _try_fetch_optional_image_bytes(hass, str(mask_url) if mask_url else None)
                                 image_bytes = await _gemini_edit_image(
                                     hass,
                                     api_key,
@@ -722,8 +727,9 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         _derive_overlay_from_base, base_bytes, image_bytes
                     )
                 elif mask_url:
-                    mask_bytes = await _fetch_image_bytes(hass, str(mask_url))
-                    image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
+                    mask_bytes = await _try_fetch_optional_image_bytes(hass, str(mask_url))
+                    if mask_bytes:
+                        image_bytes = await hass.async_add_executor_job(_apply_alpha_mask, image_bytes, mask_bytes)
 
                 full_path.write_bytes(image_bytes)
 
