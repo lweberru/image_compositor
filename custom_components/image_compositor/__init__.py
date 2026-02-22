@@ -85,7 +85,7 @@ GENERATE_MASKS_SCHEMA = vol.Schema(
         vol.Optional("base_image"): str,
         vol.Optional("base_prompt"): str,
         vol.Optional("base_view"): str,
-        vol.Optional("threshold", default=12): int,
+        vol.Optional("threshold", default=16): int,
         vol.Optional("targets"): list,
     }
 )
@@ -262,6 +262,131 @@ def _postprocess_icon_overlay(
     out = BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
+
+
+def _mask_target_constraint_text(target_name: str) -> str:
+    key = str(target_name or "").lower()
+    rules = [
+        "Interpret left/right strictly from vehicle perspective, not from viewer image perspective.",
+        "Do not change camera angle, perspective, crop, or vehicle position.",
+    ]
+
+    if key == "door_front_left_open":
+        rules.append("Open only the front left door. Keep front right, rear left and rear right doors closed.")
+    elif key == "door_front_right_open":
+        rules.append("Open only the front right door. Keep front left, rear left and rear right doors closed.")
+    elif key == "door_rear_left_open":
+        rules.append("Open only the rear left door. Keep front left, front right and rear right doors closed.")
+    elif key == "door_rear_right_open":
+        rules.append("Open only the rear right door. Keep front left, front right and rear left doors closed.")
+    elif key == "window_front_left_open":
+        rules.append("Open only the front left window glass area. Keep all doors closed and keep all other windows closed.")
+    elif key == "window_front_right_open":
+        rules.append("Open only the front right window glass area. Keep all doors closed and keep all other windows closed.")
+    elif key == "window_rear_left_open":
+        rules.append("Open only the rear left window glass area. Keep all doors closed and keep all other windows closed.")
+    elif key == "window_rear_right_open":
+        rules.append("Open only the rear right window glass area. Keep all doors closed and keep all other windows closed.")
+
+    return " ".join(rules)
+
+
+def _mask_ratio(mask_bytes: bytes) -> float:
+    from io import BytesIO
+
+    from PIL import Image
+
+    mask = Image.open(BytesIO(mask_bytes)).convert("L")
+    hist = mask.histogram()
+    total = float(sum(hist)) or 1.0
+    white = float(sum(hist[1:]))
+    return white / total
+
+
+def _target_roi_candidates(target_name: str) -> list[tuple[float, float, float, float]]:
+    key = str(target_name or "").lower()
+
+    if key.startswith("door_") or key.startswith("window_"):
+        if "front" in key:
+            y0, y1 = (0.28, 0.74)
+        elif "rear" in key:
+            y0, y1 = (0.34, 0.86)
+        else:
+            y0, y1 = (0.28, 0.86)
+
+        if "left" in key or "right" in key:
+            # Two mirrored candidates because model outputs can flip perceived side.
+            return [
+                (0.04, y0, 0.62, y1),
+                (0.38, y0, 0.96, y1),
+                (0.04, y0, 0.96, y1),
+            ]
+        return [(0.04, y0, 0.96, y1)]
+
+    if key == "hood_open":
+        return [(0.00, 0.24, 0.62, 0.76), (0.00, 0.20, 0.72, 0.82)]
+    if key == "trunk_open":
+        return [(0.38, 0.22, 1.00, 0.88), (0.28, 0.18, 1.00, 0.92)]
+    if key.startswith("sunroof_"):
+        return [(0.30, 0.12, 0.74, 0.54), (0.22, 0.08, 0.82, 0.60)]
+    return [(0.00, 0.00, 1.00, 1.00)]
+
+
+def _apply_target_roi_to_mask(mask_bytes: bytes, target_name: str) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    mask = Image.open(BytesIO(mask_bytes)).convert("L")
+    mask = mask.point(lambda p: 255 if p > 127 else 0)
+    width, height = mask.size
+
+    original_hist = mask.histogram()
+    original_white = int(sum(original_hist[1:]))
+    if original_white <= 0:
+        return mask_bytes
+
+    candidates = _target_roi_candidates(target_name)
+    best_mask = mask
+    best_white = original_white
+
+    for x0, y0, x1, y1 in candidates:
+        left = max(0, min(width, int(width * x0)))
+        top = max(0, min(height, int(height * y0)))
+        right = max(left + 1, min(width, int(width * x1)))
+        bottom = max(top + 1, min(height, int(height * y1)))
+
+        candidate = Image.new("L", (width, height), 0)
+        crop = mask.crop((left, top, right, bottom))
+        candidate.paste(crop, (left, top))
+        white = int(sum(candidate.histogram()[1:]))
+        if white > best_white:
+            best_mask = candidate
+            best_white = white
+
+    # If ROI would over-cut almost everything, keep the original mask.
+    if best_white < max(32, int(original_white * 0.15)):
+        best_mask = mask
+
+    out = BytesIO()
+    best_mask.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _mask_retry_prompt(prompt: str, target_name: str, too_large: bool) -> str:
+    base = str(prompt or "").strip()
+    constraint = _mask_target_constraint_text(target_name)
+    if too_large:
+        return (
+            f"{base} STRICT: The changed region is currently too large. "
+            "Change only the minimal target region and keep all surrounding panels and windows untouched. "
+            f"{constraint}"
+        )
+    return (
+        f"{base} STRICT: Ensure a clearly visible change for the requested target only, "
+        "without changing unrelated parts. "
+        f"{constraint}"
+    )
 
 
 async def _openai_edit_image(
@@ -767,37 +892,42 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         for target in targets:
             name = target.get("name") or "mask"
             description = target.get("description") or name.replace("_", " ")
+            target_constraints = _mask_target_constraint_text(name)
             prompt = target.get("prompt") or (
                 f"{base_prompt}. ONLY change this part: {description}. "
                 "Keep identical camera angle, vehicle scale, geometry, paint, reflections, background and lighting. "
-                "Do not alter any other region. Return a full-frame edited image."
+                "Do not alter any other region. Return a full-frame edited image. "
+                f"{target_constraints}"
             )
             filename = _safe_filename(target.get("filename") or name, "png")
             full_path = output_dir / filename
 
             edited_bytes: bytes | None = None
             error: str | None = None
-            try:
+
+            async def _generate_edited(prompt_text: str) -> bytes | None:
                 if provider_type == "openai":
-                    edited_bytes = await _openai_edit_image(
+                    return await _openai_edit_image(
                         hass,
                         str(api_key),
                         base_bytes,
                         None,
-                        prompt,
+                        prompt_text,
                         model,
                         openai_size,
                     )
-                else:
-                    edited_bytes = await _gemini_edit_image(
-                        hass,
-                        str(api_key),
-                        base_bytes,
-                        None,
-                        prompt,
-                        model,
-                        provider_service_data=provider_service_data,
-                    )
+                return await _gemini_edit_image(
+                    hass,
+                    str(api_key),
+                    base_bytes,
+                    None,
+                    prompt_text,
+                    model,
+                    provider_service_data=provider_service_data,
+                )
+
+            try:
+                edited_bytes = await _generate_edited(prompt)
             except Exception as err:  # noqa: BLE001
                 error = str(err)
 
@@ -806,18 +936,56 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                 continue
 
             try:
+                min_ratio = 0.0012
+                max_ratio = 0.28
                 mask_bytes = await hass.async_add_executor_job(
                     _derive_binary_mask_from_base,
                     base_bytes,
                     edited_bytes,
                     threshold,
                 )
+                mask_bytes = await hass.async_add_executor_job(_apply_target_roi_to_mask, mask_bytes, name)
+                ratio = await hass.async_add_executor_job(_mask_ratio, mask_bytes)
+
+                if ratio < min_ratio or ratio > max_ratio:
+                    retry_prompt = _mask_retry_prompt(prompt, name, ratio > max_ratio)
+                    retry_threshold = max(1, min(255, threshold + 6 if ratio > max_ratio else threshold - 4))
+                    try:
+                        retry_edited = await _generate_edited(retry_prompt)
+                    except Exception:  # noqa: BLE001
+                        retry_edited = None
+                    if retry_edited:
+                        retry_mask_bytes = await hass.async_add_executor_job(
+                            _derive_binary_mask_from_base,
+                            base_bytes,
+                            retry_edited,
+                            retry_threshold,
+                        )
+                        retry_mask_bytes = await hass.async_add_executor_job(
+                            _apply_target_roi_to_mask,
+                            retry_mask_bytes,
+                            name,
+                        )
+                        retry_ratio = await hass.async_add_executor_job(_mask_ratio, retry_mask_bytes)
+
+                        def _penalty(value: float) -> float:
+                            if value < min_ratio:
+                                return 100.0 + (min_ratio - value)
+                            if value > max_ratio:
+                                return 100.0 + (value - max_ratio)
+                            return abs(0.05 - value)
+
+                        if _penalty(retry_ratio) < _penalty(ratio):
+                            mask_bytes = retry_mask_bytes
+                            ratio = retry_ratio
+
                 full_path.write_bytes(mask_bytes)
                 results.append(
                     {
                         "name": name,
                         "local_url": _local_url_from_path(output_path, filename),
                         "filename": str(full_path),
+                        "area_ratio": round(float(ratio), 6),
                     }
                 )
             except Exception as err:  # noqa: BLE001
