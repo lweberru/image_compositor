@@ -90,7 +90,7 @@ clear_cache:
 
 ensure_assets:
   name: Ensure assets
-  description: Generate and cache assets via ai_task, OpenAI, or Google Gemini (edits or generations). Masks are optional; writes per-asset JSON metadata sidecars.
+  description: Generate and cache assets via ai_task, OpenAI, or Google Gemini (edits or generations). Masks are optional; writes per-asset JSON metadata sidecars and deduplicates identical image content.
   fields:
     output_path:
       name: Output path

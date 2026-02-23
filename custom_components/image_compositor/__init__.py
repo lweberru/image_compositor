@@ -155,10 +155,37 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
+def _hash_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
 def _safe_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _find_existing_asset_for_hash(output_dir: Path, image_hash: str, exclude: Path | None = None) -> Path | None:
+    for metadata_file in output_dir.glob("*.json"):
+        try:
+            payload = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("image_hash") or "").strip() != image_hash:
+            continue
+        filename = str(payload.get("filename") or "").strip()
+        if not filename:
+            continue
+        candidate = Path(filename)
+        if not candidate.is_absolute():
+            candidate = output_dir / candidate
+        if exclude and candidate.resolve() == exclude.resolve():
+            continue
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
 def _build_asset_metadata(
@@ -171,8 +198,10 @@ def _build_asset_metadata(
     provider: dict[str, Any],
     provider_type: str,
     prompt: str,
+    image_hash: str,
     asset: dict[str, Any],
     cached: bool,
+    deduplicated: bool,
 ) -> dict[str, Any]:
     provider_meta = {
         "type": provider_type,
@@ -199,8 +228,10 @@ def _build_asset_metadata(
         "task_name_prefix": task_name_prefix,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "cached": cached,
+        "deduplicated": deduplicated,
         "prompt": prompt,
         "prompt_hash": _hash_text(prompt),
+        "image_hash": image_hash,
         "provider": provider_meta,
         "source": source_meta,
     }
@@ -1158,6 +1189,14 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         force_generation = bool(call.data.get("force"))
         task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor")
         assets = call.data.get("assets") or []
+        referenced_base_files: set[str] = set()
+        for entry in assets:
+            if not isinstance(entry, dict):
+                continue
+            base_ref = entry.get("base_ref")
+            if not base_ref:
+                continue
+            referenced_base_files.add(_safe_filename(str(base_ref), "png"))
 
         results: list[dict[str, Any]] = []
 
@@ -1178,6 +1217,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             provider_type = str(provider.get("type") or "ai_task").lower()
 
             if full_path.exists() and not force_generation:
+                cached_hash = _hash_bytes(full_path.read_bytes())
                 metadata = _build_asset_metadata(
                     name=name,
                     filename=str(full_path),
@@ -1187,8 +1227,10 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                     provider=_safe_dict(provider),
                     provider_type=provider_type,
                     prompt=prompt,
+                    image_hash=cached_hash,
                     asset=asset,
                     cached=True,
+                    deduplicated=False,
                 )
                 _write_asset_metadata_file(metadata_path, metadata)
                 results.append(
@@ -1198,6 +1240,8 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         "metadata_local_url": metadata_local_url,
                         "metadata_filename": str(metadata_path),
                         "filename": str(full_path),
+                        "image_hash": cached_hash,
+                        "deduplicated": False,
                         "cached": True,
                     }
                 )
@@ -1371,28 +1415,52 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         image_bytes,
                     )
 
-                full_path.write_bytes(image_bytes)
+                image_hash = _hash_bytes(image_bytes)
+                protect_requested_filename = filename in referenced_base_files
+                deduplicated = False
+                selected_path = full_path
+                selected_filename = filename
+
+                if not protect_requested_filename:
+                    duplicate_path = _find_existing_asset_for_hash(output_dir, image_hash, exclude=full_path)
+                    if duplicate_path and duplicate_path.exists():
+                        selected_path = duplicate_path
+                        selected_filename = duplicate_path.name
+                        deduplicated = True
+                    else:
+                        full_path.write_bytes(image_bytes)
+                else:
+                    full_path.write_bytes(image_bytes)
+
+                selected_local_url = _local_url_from_path(output_path, selected_filename)
+                selected_metadata_filename = _metadata_filename_for(selected_filename)
+                selected_metadata_path = output_dir / selected_metadata_filename
+                selected_metadata_local_url = _local_url_from_path(output_path, selected_metadata_filename)
                 metadata = _build_asset_metadata(
                     name=name,
-                    filename=str(full_path),
-                    local_url=local_url,
+                    filename=str(selected_path),
+                    local_url=selected_local_url,
                     output_path=output_path,
                     task_name_prefix=task_name_prefix,
                     provider=_safe_dict(provider),
                     provider_type=provider_type,
                     prompt=prompt,
+                    image_hash=image_hash,
                     asset=asset,
                     cached=False,
+                    deduplicated=deduplicated,
                 )
-                _write_asset_metadata_file(metadata_path, metadata)
+                _write_asset_metadata_file(selected_metadata_path, metadata)
 
                 results.append(
                     {
                         "name": name,
-                        "local_url": local_url,
-                        "metadata_local_url": metadata_local_url,
-                        "metadata_filename": str(metadata_path),
-                        "filename": str(full_path),
+                        "local_url": selected_local_url,
+                        "metadata_local_url": selected_metadata_local_url,
+                        "metadata_filename": str(selected_metadata_path),
+                        "filename": str(selected_path),
+                        "image_hash": image_hash,
+                        "deduplicated": deduplicated,
                         "cached": False,
                     }
                 )
