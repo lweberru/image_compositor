@@ -90,7 +90,7 @@ clear_cache:
 
 ensure_assets:
   name: Ensure assets
-  description: Generate and cache assets via ai_task, OpenAI, or Google Gemini (edits or generations). Masks are optional.
+  description: Generate and cache assets via ai_task, OpenAI, or Google Gemini (edits or generations). Masks are optional; writes per-asset JSON metadata sidecars.
   fields:
     output_path:
       name: Output path
@@ -121,7 +121,7 @@ ensure_assets:
         object:
     assets:
       name: Assets
-      description: List of assets to generate (name, prompt, filename, mask_url, base_ref, base_image, derive_overlay, attempts, postprocess=icon_overlay|composite_with_base, icon_max_size).
+      description: List of assets to generate (name, prompt, filename, mask_url, base_ref, base_image, derive_overlay, attempts, postprocess=icon_overlay|composite_with_base, icon_max_size, metadata).
       required: true
       selector:
         object:

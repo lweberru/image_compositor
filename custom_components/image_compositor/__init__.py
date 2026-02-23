@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import base64
@@ -143,6 +144,70 @@ def _local_url_from_path(output_path: str, filename: str) -> str:
     local_path = output_path[4:] if output_path.startswith("www/") else output_path
     local_path = local_path.strip("/")
     return f"/local/{local_path}/{filename}" if local_path else f"/local/{filename}"
+
+
+def _metadata_filename_for(filename: str) -> str:
+    stem, _ = os.path.splitext(filename)
+    return f"{stem}.json"
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _build_asset_metadata(
+    *,
+    name: str,
+    filename: str,
+    local_url: str,
+    output_path: str,
+    task_name_prefix: str,
+    provider: dict[str, Any],
+    provider_type: str,
+    prompt: str,
+    asset: dict[str, Any],
+    cached: bool,
+) -> dict[str, Any]:
+    provider_meta = {
+        "type": provider_type,
+        "model": provider.get("model"),
+        "size": provider.get("size"),
+        "entity_id": provider.get("entity_id") or provider.get("ha_entity_id"),
+    }
+    source_meta = {
+        "base_ref": asset.get("base_ref"),
+        "base_image": asset.get("base_image"),
+        "mask_url": asset.get("mask_url") or asset.get("mask"),
+        "postprocess": asset.get("postprocess"),
+        "derive_overlay": bool(asset.get("derive_overlay")),
+        "attempts": int(asset.get("attempts") or 2),
+    }
+    if isinstance(asset.get("metadata"), dict):
+        source_meta["custom"] = asset.get("metadata")
+
+    return {
+        "name": name,
+        "filename": filename,
+        "local_url": local_url,
+        "output_path": output_path,
+        "task_name_prefix": task_name_prefix,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "cached": cached,
+        "prompt": prompt,
+        "prompt_hash": _hash_text(prompt),
+        "provider": provider_meta,
+        "source": source_meta,
+    }
+
+
+def _write_asset_metadata_file(path: Path, metadata: dict[str, Any]) -> None:
+    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 async def _try_fetch_optional_image_bytes(hass: HomeAssistant, source: str | None) -> bytes | None:
@@ -1106,19 +1171,37 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             output_format = str(asset.get("format") or "png").lower()
             filename = _safe_filename(asset.get("filename") or name, output_format)
             full_path = output_dir / filename
+            local_url = _local_url_from_path(output_path, filename)
+            metadata_filename = _metadata_filename_for(filename)
+            metadata_path = output_dir / metadata_filename
+            metadata_local_url = _local_url_from_path(output_path, metadata_filename)
+            provider_type = str(provider.get("type") or "ai_task").lower()
 
             if full_path.exists() and not force_generation:
+                metadata = _build_asset_metadata(
+                    name=name,
+                    filename=str(full_path),
+                    local_url=local_url,
+                    output_path=output_path,
+                    task_name_prefix=task_name_prefix,
+                    provider=_safe_dict(provider),
+                    provider_type=provider_type,
+                    prompt=prompt,
+                    asset=asset,
+                    cached=True,
+                )
+                _write_asset_metadata_file(metadata_path, metadata)
                 results.append(
                     {
                         "name": name,
-                        "local_url": _local_url_from_path(output_path, filename),
+                        "local_url": local_url,
+                        "metadata_local_url": metadata_local_url,
+                        "metadata_filename": str(metadata_path),
                         "filename": str(full_path),
                         "cached": True,
                     }
                 )
                 continue
-
-            provider_type = str(provider.get("type") or "ai_task").lower()
 
             base_ref = asset.get("base_ref")
             base_image = asset.get("base_image")
@@ -1289,11 +1372,26 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                     )
 
                 full_path.write_bytes(image_bytes)
+                metadata = _build_asset_metadata(
+                    name=name,
+                    filename=str(full_path),
+                    local_url=local_url,
+                    output_path=output_path,
+                    task_name_prefix=task_name_prefix,
+                    provider=_safe_dict(provider),
+                    provider_type=provider_type,
+                    prompt=prompt,
+                    asset=asset,
+                    cached=False,
+                )
+                _write_asset_metadata_file(metadata_path, metadata)
 
                 results.append(
                     {
                         "name": name,
-                        "local_url": _local_url_from_path(output_path, filename),
+                        "local_url": local_url,
+                        "metadata_local_url": metadata_local_url,
+                        "metadata_filename": str(metadata_path),
                         "filename": str(full_path),
                         "cached": False,
                     }
