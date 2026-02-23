@@ -113,6 +113,13 @@ ensure_assets:
       example: true
       selector:
         boolean:
+    cleanup:
+      name: Cleanup orphan files
+      description: Remove orphan image and metadata files in output_path that are no longer referenced.
+      required: false
+      example: true
+      selector:
+        boolean:
     provider:
       name: Provider
       description: Provider config (type=ai_task|openai|gemini, entity_id, api_key, model, size, service_data).

@@ -73,6 +73,7 @@ ENSURE_ASSETS_SCHEMA = vol.Schema(
         vol.Optional("task_name_prefix"): str,
         vol.Optional("provider", default={}): dict,
         vol.Optional("force", default=False): bool,
+        vol.Optional("cleanup", default=False): bool,
         vol.Required("assets"): list,
     }
 )
@@ -239,6 +240,82 @@ def _build_asset_metadata(
 
 def _write_asset_metadata_file(path: Path, metadata: dict[str, Any]) -> None:
     path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _is_asset_metadata(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return "filename" in payload and "local_url" in payload and "provider" in payload
+
+
+def _extract_metadata_target_path(metadata_file: Path, payload: dict[str, Any], output_dir: Path) -> Path | None:
+    filename = str(payload.get("filename") or "").strip()
+    if not filename:
+        return None
+    path = Path(filename)
+    if not path.is_absolute():
+        path = output_dir / path
+    return path
+
+
+def _cleanup_orphan_assets(
+    output_dir: Path,
+    *,
+    keep_image_names: set[str],
+    keep_metadata_names: set[str],
+) -> dict[str, Any]:
+    image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
+    removed_images: list[str] = []
+    removed_metadata: list[str] = []
+
+    metadata_files = [entry for entry in output_dir.glob("*.json") if entry.is_file()]
+    referenced_images: set[str] = set()
+    parsed_metadata: list[tuple[Path, dict[str, Any]]] = []
+
+    for metadata_file in metadata_files:
+        try:
+            payload = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not _is_asset_metadata(payload):
+            continue
+        parsed_metadata.append((metadata_file, payload))
+        target_path = _extract_metadata_target_path(metadata_file, payload, output_dir)
+        if target_path:
+            referenced_images.add(target_path.name)
+
+    keep_all_images = referenced_images | set(keep_image_names)
+
+    for entry in output_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in image_suffixes:
+            continue
+        if entry.name in keep_all_images:
+            continue
+        try:
+            entry.unlink()
+            removed_images.append(str(entry))
+        except Exception:  # noqa: BLE001
+            continue
+
+    for metadata_file, payload in parsed_metadata:
+        if metadata_file.name in keep_metadata_names:
+            continue
+        target_path = _extract_metadata_target_path(metadata_file, payload, output_dir)
+        if target_path and target_path.exists():
+            continue
+        try:
+            metadata_file.unlink()
+            removed_metadata.append(str(metadata_file))
+        except Exception:  # noqa: BLE001
+            continue
+
+    return {
+        "removed_images": removed_images,
+        "removed_metadata": removed_metadata,
+        "removed_count": len(removed_images) + len(removed_metadata),
+    }
 
 
 async def _try_fetch_optional_image_bytes(hass: HomeAssistant, source: str | None) -> bytes | None:
@@ -1187,6 +1264,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
 
         provider = call.data.get("provider") or {}
         force_generation = bool(call.data.get("force"))
+        cleanup = bool(call.data.get("cleanup"))
         task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor")
         assets = call.data.get("assets") or []
         referenced_base_files: set[str] = set()
@@ -1199,6 +1277,8 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             referenced_base_files.add(_safe_filename(str(base_ref), "png"))
 
         results: list[dict[str, Any]] = []
+        keep_image_names: set[str] = set(referenced_base_files)
+        keep_metadata_names: set[str] = set()
 
         for asset in assets:
             if not isinstance(asset, dict):
@@ -1245,6 +1325,8 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         "cached": True,
                     }
                 )
+                keep_image_names.add(filename)
+                keep_metadata_names.add(metadata_filename)
                 continue
 
             base_ref = asset.get("base_ref")
@@ -1464,6 +1546,8 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         "cached": False,
                     }
                 )
+                keep_image_names.add(selected_filename)
+                keep_metadata_names.add(selected_metadata_filename)
             except Exception as err:  # noqa: BLE001
                 results.append(
                     {
@@ -1472,6 +1556,14 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                         "cached": False,
                     }
                 )
+
+        if cleanup:
+            cleanup_result = _cleanup_orphan_assets(
+                output_dir,
+                keep_image_names=keep_image_names,
+                keep_metadata_names=keep_metadata_names,
+            )
+            return {"assets": results, "cleanup": cleanup_result}
 
         return {"assets": results}
 
