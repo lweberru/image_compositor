@@ -115,11 +115,22 @@ ensure_assets:
         boolean:
     cleanup:
       name: Cleanup orphan files
-      description: Remove orphan image and metadata files in output_path that are no longer referenced.
+      description: Cleanup orphan metadata files in output_path. Generated image files are preserved and never deleted.
       required: false
       example: true
       selector:
         boolean:
+    cleanup_grace_hours:
+      name: Cleanup grace period (hours)
+      description: Minimum age before orphan metadata may be removed (default 24).
+      required: false
+      example: 24
+      selector:
+        number:
+          min: 0
+          max: 720
+          step: 1
+          mode: box
     provider:
       name: Provider
       description: Provider config (type=ai_task|openai|gemini, entity_id, api_key, model, size, service_data).

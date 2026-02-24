@@ -74,6 +74,7 @@ ENSURE_ASSETS_SCHEMA = vol.Schema(
         vol.Optional("provider", default={}): dict,
         vol.Optional("force", default=False): bool,
         vol.Optional("cleanup", default=False): bool,
+        vol.Optional("cleanup_grace_hours", default=24): vol.Coerce(float),
         vol.Required("assets"): list,
     }
 )
@@ -258,15 +259,28 @@ def _extract_metadata_target_path(metadata_file: Path, payload: dict[str, Any], 
     return path
 
 
+def _is_older_than(path: Path, min_age_seconds: float) -> bool:
+    if min_age_seconds <= 0:
+        return True
+    try:
+        age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+    except Exception:  # noqa: BLE001
+        return False
+    return age_seconds >= min_age_seconds
+
+
 def _cleanup_orphan_assets(
     output_dir: Path,
     *,
     keep_image_names: set[str],
     keep_metadata_names: set[str],
+    min_age_seconds: float,
 ) -> dict[str, Any]:
     image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
     removed_images: list[str] = []
     removed_metadata: list[str] = []
+    preserved_orphan_images: list[str] = []
+    kept_recent_metadata: list[str] = []
 
     metadata_files = [entry for entry in output_dir.glob("*.json") if entry.is_file()]
     referenced_images: set[str] = set()
@@ -293,17 +307,16 @@ def _cleanup_orphan_assets(
             continue
         if entry.name in keep_all_images:
             continue
-        try:
-            entry.unlink()
-            removed_images.append(str(entry))
-        except Exception:  # noqa: BLE001
-            continue
+        preserved_orphan_images.append(str(entry))
 
     for metadata_file, payload in parsed_metadata:
         if metadata_file.name in keep_metadata_names:
             continue
         target_path = _extract_metadata_target_path(metadata_file, payload, output_dir)
         if target_path and target_path.exists():
+            continue
+        if not _is_older_than(metadata_file, min_age_seconds):
+            kept_recent_metadata.append(str(metadata_file))
             continue
         try:
             metadata_file.unlink()
@@ -314,6 +327,9 @@ def _cleanup_orphan_assets(
     return {
         "removed_images": removed_images,
         "removed_metadata": removed_metadata,
+        "preserved_orphan_images": preserved_orphan_images,
+        "kept_recent_metadata": kept_recent_metadata,
+        "grace_hours": round(float(min_age_seconds) / 3600.0, 3),
         "removed_count": len(removed_images) + len(removed_metadata),
     }
 
@@ -1265,6 +1281,8 @@ async def _async_register_service(hass: HomeAssistant) -> None:
         provider = call.data.get("provider") or {}
         force_generation = bool(call.data.get("force"))
         cleanup = bool(call.data.get("cleanup"))
+        cleanup_grace_hours_raw = float(call.data.get("cleanup_grace_hours") or 24)
+        cleanup_grace_hours = max(0.0, cleanup_grace_hours_raw)
         task_name_prefix = str(call.data.get("task_name_prefix") or "Image Compositor")
         assets = call.data.get("assets") or []
         referenced_base_files: set[str] = set()
@@ -1562,6 +1580,7 @@ async def _async_register_service(hass: HomeAssistant) -> None:
                 output_dir,
                 keep_image_names=keep_image_names,
                 keep_metadata_names=keep_metadata_names,
+                min_age_seconds=cleanup_grace_hours * 3600.0,
             )
             return {"assets": results, "cleanup": cleanup_result}
 
