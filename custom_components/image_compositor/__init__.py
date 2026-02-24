@@ -1315,22 +1315,38 @@ async def _async_register_service(hass: HomeAssistant) -> None:
             provider_type = str(provider.get("type") or "ai_task").lower()
 
             if full_path.exists() and not force_generation:
-                cached_hash = _hash_bytes(full_path.read_bytes())
-                metadata = _build_asset_metadata(
-                    name=name,
-                    filename=str(full_path),
-                    local_url=local_url,
-                    output_path=output_path,
-                    task_name_prefix=task_name_prefix,
-                    provider=_safe_dict(provider),
-                    provider_type=provider_type,
-                    prompt=prompt,
-                    image_hash=cached_hash,
-                    asset=asset,
-                    cached=True,
-                    deduplicated=False,
-                )
-                _write_asset_metadata_file(metadata_path, metadata)
+                cached_hash: str | None = None
+                metadata_valid = False
+                if metadata_path.exists() and metadata_path.is_file():
+                    try:
+                        existing_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        if _is_asset_metadata(existing_metadata):
+                            metadata_valid = True
+                            existing_hash = str(existing_metadata.get("image_hash") or "").strip()
+                            if existing_hash:
+                                cached_hash = existing_hash
+                    except Exception:  # noqa: BLE001
+                        metadata_valid = False
+
+                if not cached_hash:
+                    cached_hash = _hash_bytes(full_path.read_bytes())
+
+                if not metadata_valid:
+                    metadata = _build_asset_metadata(
+                        name=name,
+                        filename=str(full_path),
+                        local_url=local_url,
+                        output_path=output_path,
+                        task_name_prefix=task_name_prefix,
+                        provider=_safe_dict(provider),
+                        provider_type=provider_type,
+                        prompt=prompt,
+                        image_hash=cached_hash,
+                        asset=asset,
+                        cached=True,
+                        deduplicated=False,
+                    )
+                    _write_asset_metadata_file(metadata_path, metadata)
                 results.append(
                     {
                         "name": name,
